@@ -1,0 +1,79 @@
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.build/
+dist/
+build/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.cache/
+
+# --- Environments ---
+.venv/
+venv/
+ENV/
+env/
+conda-env/
+*.conda
+*.env
+.envrc
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Training artifacts / large outputs ---
+runs/
+checkpoints/
+logs/
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
+tb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.onnx
+
+# --- Data (keep manifests in git; ignore bulky raw/processed data) ---
+data/
+!data/README.md
+!data/**/README.md
+!data_manifest.json
+!data/**/data_manifest.json
+
+# --- Model / tokenizer caches (Hugging Face / Transformers) ---
+.hf_cache/
+hf_cache/
+.cache/huggingface/
+.cache/torch/
+transformers_cache/
+tokenizers_cache/
+datasets_cache/
+
+# --- Mac / misc ---
+*.log
+*.tmp
+*.swp
+*~
+/agent/

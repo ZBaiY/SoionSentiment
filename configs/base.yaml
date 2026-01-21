@@ -1,0 +1,41 @@
+# Base config (placeholder)
+project: soion-sentiment
+seed: 42
+
+task:
+  name: sentiment_classification
+  num_classes: 3
+  metric: macro_f1
+
+model:
+  backbone: microsoft/deberta-v3-base
+  max_length: 256
+
+train:
+  epochs: 5
+  batch_size: 16
+  lr: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.06
+  scheduler: cosine
+  early_stopping:
+    enabled: true
+    metric: macro_f1
+    patience: 2
+
+split:
+  protocol: time
+  # Provide concrete split fields once dataset is defined.
+  # Example:
+  # time_key: published_at
+  # train_end: 2022-12-31
+  # val_end: 2023-06-30
+
+imbalance:
+  strategy: none
+  # options: none | reweight | sampler | focal_loss
+
+regularization:
+  label_smoothing: 0.0
+  dropout_override: null
+
