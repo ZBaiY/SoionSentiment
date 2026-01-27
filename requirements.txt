@@ -1,0 +1,32 @@
+# core
+transformers==4.57.6
+datasets==4.5.0
+evaluate==0.4.6
+accelerate==1.12.0
+tokenizers==0.22.2
+safetensors==0.7.0
+
+# data / metrics
+# numpy==1.26.4
+# pandas==2.2.2
+# pyarrow==16.1.0
+# scikit-learn==1.5.1
+# tqdm==4.66.5
+
+# repro / config
+# pyyaml==6.0.2
+# packaging==24.1
+
+# tokenizer deps (recommended)
+sentencepiece==0.2.1
+protobuf==6.33.4
+
+# logging / viz (optional but useful)
+tensorboard==2.20.0
+matplotlib==3.10.8
+rich==14.2.0
+typer==0.21.1
+
+# torch: install separately (platform-specific)
+
+# ----- latest version up to Jan 2026 -----

@@ -6,6 +6,8 @@ Thumbs.db
 !.vscode/tasks.json
 !.vscode/launch.json
 .idea/
+# --- notebooks ---
+*.ipynb 
 
 # --- Python ---
 __pycache__/
@@ -56,7 +58,7 @@ tb/
 *.onnx
 
 # --- Data (keep manifests in git; ignore bulky raw/processed data) ---
-data/
+/data/
 !data/README.md
 !data/**/README.md
 !data_manifest.json
