@@ -129,7 +129,10 @@ def run_eval(
     ds = _build_dataset(cfg, tokenizer)
     loader = build_dataloader(cfg, ds[split], tokenizer, split)
 
-    model = AutoModelForSequenceClassification.from_pretrained(str(checkpoint_path))
+    model_kwargs = {"local_files_only": cfg.runtime.hf_offline}
+    if cfg.runtime.hf_cache_dir is not None:
+        model_kwargs["cache_dir"] = cfg.runtime.hf_cache_dir
+    model = AutoModelForSequenceClassification.from_pretrained(str(checkpoint_path), **model_kwargs)
     model.to(device_spec.device)
     model.eval()
 

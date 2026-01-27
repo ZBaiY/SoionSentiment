@@ -8,7 +8,6 @@ data_ref: phrasebank_66agree
 model_ref: deberta_v3_base
 preset_ref: baseline
 
-
 # detailed default configurations
 data:
   name: phrasebank
@@ -87,3 +86,5 @@ runtime:
   num_workers: 0
   pin_memory: true
   deterministic: true
+  hf_cache_dir: null
+  hf_offline: false

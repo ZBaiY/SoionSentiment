@@ -107,6 +107,8 @@ class RuntimeConfig:
     num_workers: int
     pin_memory: bool
     deterministic: bool
+    hf_cache_dir: str | None
+    hf_offline: bool
 
 
 @dataclass(frozen=True)

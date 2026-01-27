@@ -164,3 +164,16 @@ def test_config_registry_merge_and_hash(tmp_path: Path) -> None:
 
     cfg_c = load_config(cfg_path, overrides={"training.epochs": cfg_a.training.epochs + 1})
     assert cfg_c.config_hash() != cfg_a.config_hash()
+
+
+def test_hf_offline_cache_wiring(tmp_path: Path) -> None:
+    base_cfg = yaml.safe_load(Path("configs/base.yaml").read_text(encoding="utf-8"))
+    base_cfg["runtime"]["hf_offline"] = True
+    base_cfg["runtime"]["hf_cache_dir"] = str(tmp_path / "hf_cache")
+
+    cfg_path = tmp_path / "base.yaml"
+    cfg_path.write_text(yaml.safe_dump(base_cfg, sort_keys=True), encoding="utf-8")
+
+    cfg = load_config(cfg_path)
+    assert cfg.runtime.hf_offline is True
+    assert cfg.runtime.hf_cache_dir == str(tmp_path / "hf_cache")

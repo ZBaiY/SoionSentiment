@@ -18,10 +18,10 @@ def _repo_root_from_here() -> Path:
 
 
 def build_tokenizer(cfg: Config):
-    tokenizer = AutoTokenizer.from_pretrained(
-        cfg.model.backbone,
-        use_fast=cfg.tokenizer.use_fast,
-    )
+    kwargs = {"use_fast": cfg.tokenizer.use_fast, "local_files_only": cfg.runtime.hf_offline}
+    if cfg.runtime.hf_cache_dir is not None:
+        kwargs["cache_dir"] = cfg.runtime.hf_cache_dir
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.backbone, **kwargs)
     tokenizer.padding_side = cfg.tokenizer.padding_side
     tokenizer.truncation_side = cfg.tokenizer.truncation_side
     return tokenizer
