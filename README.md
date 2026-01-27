@@ -95,3 +95,39 @@ This repository is under **active development**.
 Results, ablations, and analysis will be added incrementally as training progresses.
 
 The emphasis is on *clean experimental history*, not rapid iteration or leaderboard results.
+
+---
+
+## Training Entry Point
+
+All training/eval/data/model parameters are driven by `configs/base.yaml`, with optional CLI overrides.
+
+Run training:
+
+```bash
+python scripts/train.py --config configs/base.yaml
+```
+
+Override config values:
+
+```bash
+python scripts/train.py \
+  --config configs/base.yaml \
+  --override training.epochs=1 \
+  --override training.batch_size=8 \
+  --override model.backbone=microsoft/deberta-v3-base
+```
+
+Run evaluation (best/last checkpoint):
+
+```bash
+python scripts/eval.py --config configs/base.yaml --checkpoint runs/<run_dir> --which best
+```
+
+Artifacts per run (under `runs/`):
+
+- `resolved_config.yaml` (fully resolved config)
+- `env.txt` (python/torch/transformers versions)
+- `data_manifest.json` (file list + hashes)
+- `metrics.jsonl` (train/eval metrics)
+- `best/` and `last/` checkpoints (model/tokenizer + `trainer_state.pt`)

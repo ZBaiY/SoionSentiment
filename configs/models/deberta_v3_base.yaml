@@ -1,0 +1,4 @@
+model:
+  backbone: microsoft/deberta-v3-base
+  labels: [negative, neutral, positive]
+  dropout_override: null

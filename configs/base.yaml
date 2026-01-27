@@ -1,41 +1,89 @@
-# Base config (placeholder)
+# Base config (single source of truth)
 project: soion-sentiment
 seed: 42
+# Registry pointers:
+# - If a ref is set, the corresponding registry file overlays this base config.
+# - If a ref is null/empty, the base.* section stays as the default.
+data_ref: phrasebank_66agree
+model_ref: deberta_v3_base
+preset_ref: baseline
 
-task:
-  name: sentiment_classification
-  num_classes: 3
-  metric: macro_f1
+
+# detailed default configurations
+data:
+  name: phrasebank
+  agree: sentences_66agree
+  split_protocol: precomputed
+  hf_dataset_root: null
+  processed_root: null
+  text_field: text
+  label_field: label
+  max_length: 256
+  padding: longest
+  truncation: true
+  shuffle_train: true
+  max_train_samples: null
+  max_eval_samples: null
+  max_test_samples: null
+  hash_files: true
+  hash_max_bytes: 104857600
 
 model:
   backbone: microsoft/deberta-v3-base
-  max_length: 256
+  labels: [negative, neutral, positive]
+  dropout_override: null
 
-train:
+tokenizer:
+  use_fast: false
+  padding_side: right
+  truncation_side: right
+
+training:
   epochs: 5
   batch_size: 16
-  lr: 2.0e-5
-  weight_decay: 0.01
-  warmup_ratio: 0.06
-  scheduler: cosine
+  eval_batch_size: 32
+  grad_accum_steps: 1
+  max_grad_norm: 1.0
+  max_steps: null
+  eval_every_steps: null
+  label_smoothing: 0.0
+  imbalance_strategy: none
   early_stopping:
     enabled: true
     metric: macro_f1
+    mode: max
     patience: 2
+    min_delta: 0.0
 
-split:
-  protocol: time
-  # Provide concrete split fields once dataset is defined.
-  # Example:
-  # time_key: published_at
-  # train_end: 2022-12-31
-  # val_end: 2023-06-30
+optim:
+  lr: 2.0e-5
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
 
-imbalance:
-  strategy: none
-  # options: none | reweight | sampler | focal_loss
+scheduler:
+  name: cosine
+  warmup_ratio: 0.06
+  warmup_steps: null
+  num_cycles: 0.5
 
-regularization:
-  label_smoothing: 0.0
-  dropout_override: null
+eval:
+  metric: macro_f1
+  mode: max
+  compute_confusion_matrix: true
 
+logging:
+  run_dir: runs
+  run_name: null
+  log_every_steps: 50
+  metrics_filename: metrics.jsonl
+  summary_filename: summary.json
+  save_best: true
+  save_last: true
+
+runtime:
+  device: auto
+  precision: fp32
+  num_workers: 0
+  pin_memory: true
+  deterministic: true
