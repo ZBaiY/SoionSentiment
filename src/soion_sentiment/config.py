@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import yaml
 
@@ -70,6 +70,7 @@ class TrainingConfig:
 class OptimConfig:
     lr: float
     weight_decay: float
+    decay_embeddings: bool
     betas: list[float]
     eps: float
 
@@ -197,6 +198,7 @@ def _from_dict(cls: type[Any], data: dict[str, Any]) -> Any:
     if not isinstance(data, dict):
         raise ValueError(f"expected mapping for {cls.__name__}, got {type(data).__name__}")
     field_map = {f.name: f for f in fields(cls)}
+    type_map = get_type_hints(cls)
     extra = set(data.keys()) - set(field_map.keys())
     if extra:
         raise ValueError(f"unexpected keys for {cls.__name__}: {sorted(extra)}")
@@ -205,8 +207,9 @@ def _from_dict(cls: type[Any], data: dict[str, Any]) -> Any:
         if name not in data:
             raise ValueError(f"missing required key {cls.__name__}.{name}")
         val = data[name]
-        if hasattr(f.type, "__dataclass_fields__"):
-            kwargs[name] = _from_dict(f.type, val)
+        f_type = type_map.get(name, f.type)
+        if hasattr(f_type, "__dataclass_fields__"):
+            kwargs[name] = _from_dict(f_type, val)
         else:
             kwargs[name] = val
     return cls(**kwargs)
@@ -268,6 +271,7 @@ def load_config(
     cfg_path = Path(path)
     base = _load_yaml(cfg_path)
 
+    resolved_only = cfg_path.name == "resolved_config.yaml"
     if data_ref is not None:
         base["data_ref"] = data_ref
     if model_ref is not None:
@@ -276,13 +280,13 @@ def load_config(
         base["preset_ref"] = preset_ref
 
     merged = dict(base)
-    if base.get("data_ref"):
+    if not resolved_only and base.get("data_ref"):
         data_path = _registry_path(cfg_path, "data", base["data_ref"])
         merged = _deep_merge(merged, _load_yaml(data_path))
-    if base.get("model_ref"):
+    if not resolved_only and base.get("model_ref"):
         model_path = _registry_path(cfg_path, "models", base["model_ref"])
         merged = _deep_merge(merged, _load_yaml(model_path))
-    if base.get("preset_ref"):
+    if not resolved_only and base.get("preset_ref"):
         preset_path = _registry_path(cfg_path, "presets", base["preset_ref"])
         merged = _deep_merge(merged, _load_yaml(preset_path))
 

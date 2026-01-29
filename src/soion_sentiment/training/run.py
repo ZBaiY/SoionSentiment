@@ -17,7 +17,7 @@ from soion_sentiment.data.phrasebank import load_phrasebank_splits
 from soion_sentiment.data.tokenize import build_tokenizer, tokenize_dataset
 from soion_sentiment.training.device import get_device
 from soion_sentiment.training.loop import train
-from soion_sentiment.training.manifest import build_data_manifest, write_data_manifest
+from soion_sentiment.data.manifest import build_data_manifest, write_data_manifest
 from soion_sentiment.training.metrics import compute_metrics
 from soion_sentiment.model.model import build_model
 from soion_sentiment.training.seed import set_seed
@@ -35,6 +35,7 @@ def _env_info() -> str:
 
 
 def _run_dir(cfg: Config) -> Path:
+    # Generate a run directory path based on timestamp and config hash.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cfg_hash = cfg.config_hash()[:8]
     suffix = f"_{cfg.logging.run_name}" if cfg.logging.run_name else ""
@@ -71,37 +72,37 @@ def run_train(
         model_ref=model_ref,
         preset_ref=preset_ref,
     )
-    set_seed(cfg.seed, cfg.runtime.deterministic)
+    set_seed(cfg.seed, cfg.runtime.deterministic) # seeds for data loading, numpy, torch, etc.
     device_spec = get_device(cfg.runtime)
 
-    run_dir = _run_dir(cfg)
+    run_dir = _run_dir(cfg) # create run directory, store resolved config and env info and etc.
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "resolved_config.yaml").write_text(cfg.to_yaml(), encoding="utf-8")
     env_text = _env_info()
     if device_spec.note:
         env_text += f"\n{device_spec.note}\n"
     (run_dir / "env.txt").write_text(env_text, encoding="utf-8")
+    
 
-    tokenizer = build_tokenizer(cfg)
-    ds = _build_dataset(cfg, tokenizer)
-    manifest = build_data_manifest(cfg)
+    tokenizer = build_tokenizer(cfg)  # tokenizer from config, usually pretrained, together with model backbone
+    ds = _build_dataset(cfg, tokenizer) # drag the dataset, get data, pass through tokenizer, return labeled datasets, with ref in dictionary and whether it is masked
+    manifest = build_data_manifest(cfg) # to record dataset info, for logging and reproducibility
+
     write_data_manifest(run_dir / "data_manifest.json", manifest)
-
     train_loader = build_dataloader(cfg, ds["train"], tokenizer, "train")
     val_loader = build_dataloader(cfg, ds["val"], tokenizer, "val")
 
-    model = build_model(cfg)
-
+    model = build_model(cfg) # build model from config, usually pretrained backbone + classification head
     summary = train(
         cfg,
-        run_dir=run_dir,
-        model=model,
-        tokenizer=tokenizer,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device_spec.device,
-        autocast_dtype=device_spec.autocast_dtype,
-        precision=device_spec.precision,
+        run_dir=run_dir,                            # the dir just created
+        model=model,                                # the model just built
+        tokenizer=tokenizer,                        # the tokenizer just built
+        train_loader=train_loader,                  # the training dataloader just built
+        val_loader=val_loader,                      # the validation dataloader just built
+        device=device_spec.device,                  # the device to run on, usually cuda or cpu    
+        autocast_dtype=device_spec.autocast_dtype,  # the dtype for autocasting, usually float16 or bfloat16 or None
+        precision=device_spec.precision,            # the precision mode, usually "amp" or "bf16" or "fp32"
     )
 
     return {"run_dir": str(run_dir), "summary": summary}
@@ -129,7 +130,15 @@ def run_eval(
     ds = _build_dataset(cfg, tokenizer)
     loader = build_dataloader(cfg, ds[split], tokenizer, split)
 
-    model_kwargs = {"local_files_only": cfg.runtime.hf_offline}
+    labels = cfg.model.labels
+    label2id = {label: i for i, label in enumerate(labels)}
+    id2label = {i: label for label, i in label2id.items()}
+    model_kwargs = {
+        "local_files_only": cfg.runtime.hf_offline,
+        "num_labels": len(labels),
+        "label2id": label2id,
+        "id2label": id2label,
+    }
     if cfg.runtime.hf_cache_dir is not None:
         model_kwargs["cache_dir"] = cfg.runtime.hf_cache_dir
     model = AutoModelForSequenceClassification.from_pretrained(str(checkpoint_path), **model_kwargs)
@@ -138,7 +147,7 @@ def run_eval(
 
     preds: list[int] = []
     labels: list[int] = []
-    with torch.no_grad():
+    with torch.no_grad():            # deactivate gradient calculation for evaluation, save memory (no backprop tracking tables for autograd)
         for batch in loader:
             batch = {k: v.to(device_spec.device) for k, v in batch.items()}
             out = model(**batch)

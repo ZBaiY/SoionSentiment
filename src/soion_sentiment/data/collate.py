@@ -18,7 +18,8 @@ def build_collator(cfg: Config, tokenizer):
 def build_dataloader(cfg: Config, dataset, tokenizer, split: str) -> DataLoader:
     is_train = split == "train"
     batch_size = cfg.training.batch_size if is_train else cfg.training.eval_batch_size
-    collator = build_collator(cfg, tokenizer)
+    collator = build_collator(cfg, tokenizer) # batch size and padding strategy from config
+    ## Dataloader will handle batching, shuffling, parallel loading, pin memory, collating etc.
     return DataLoader(
         dataset,
         batch_size=batch_size,

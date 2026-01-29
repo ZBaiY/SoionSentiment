@@ -13,19 +13,19 @@ data:
   name: phrasebank
   agree: sentences_66agree
   split_protocol: precomputed
-  hf_dataset_root: null
-  processed_root: null
-  text_field: text
-  label_field: label
-  max_length: 256
-  padding: longest
-  truncation: true
-  shuffle_train: true
-  max_train_samples: null
-  max_eval_samples: null
-  max_test_samples: null
-  hash_files: true
-  hash_max_bytes: 104857600
+  hf_dataset_root: null     # if null, use ~/.cache/huggingface/datasets
+  processed_root: null      # if null, use hf_dataset_root/processed
+  text_field: text          # the field name for texts in the dataset
+  label_field: label        # the field name for labels in the dataset
+  max_length: 256           # maximum sequence length
+  padding: longest          # padding strategy: longest | max_length | do_not_pad
+  truncation: true          # whether to truncate sequences longer than max_length
+  shuffle_train: true       # whether to shuffle training data
+  max_train_samples: null   # limit the number of train samples for quick testing
+  max_eval_samples: null    # limit the number of eval samples for quick evaluation
+  max_test_samples: null    # limit the number of test samples for quick evaluation
+  hash_files: true          # whether to hash the data files to detect changes
+  hash_max_bytes: 104857600 # 100 MB
 
 model:
   backbone: microsoft/deberta-v3-base
@@ -47,9 +47,9 @@ training:
   eval_every_steps: null
   label_smoothing: 0.0
   imbalance_strategy: none
-  early_stopping:
-    enabled: true
-    metric: macro_f1
+  early_stopping:           # early stopping config, this is used to stop training when eval metric does not improve for certain number of evals
+    enabled: true     
+    metric: macro_f1  
     mode: max
     patience: 2
     min_delta: 0.0
@@ -57,14 +57,15 @@ training:
 optim:
   lr: 2.0e-5
   weight_decay: 0.01
+  decay_embeddings: true  # apply weight decay to embedding weights by default
   betas: [0.9, 0.999]
   eps: 1.0e-8
 
-scheduler:
-  name: cosine
-  warmup_ratio: 0.06
+scheduler:              # learning rate scheduler
+  name: cosine      
+  warmup_ratio: 0.06    
   warmup_steps: null
-  num_cycles: 0.5
+  num_cycles: 0.5 
 
 eval:
   metric: macro_f1
@@ -77,14 +78,14 @@ logging:
   log_every_steps: 50
   metrics_filename: metrics.jsonl
   summary_filename: summary.json
-  save_best: true
-  save_last: true
+  save_best: true       # save the best checkpoint according to eval metric
+  save_last: true       # always save the last checkpoint
 
 runtime:
   device: auto
   precision: fp32
-  num_workers: 0
-  pin_memory: true
-  deterministic: true
-  hf_cache_dir: null
-  hf_offline: false
+  num_workers: 0        # for DataLoader, if >0, use multi-process data loading, seed will be set for each worker, things will be complicated
+  pin_memory: true      # for DataLoader, pin memory on CPU side
+  deterministic: true   # set cudnn.deterministic if using CUDA
+  hf_cache_dir: null    # HuggingFace cache dir
+  hf_offline: false     # HuggingFace offline mode

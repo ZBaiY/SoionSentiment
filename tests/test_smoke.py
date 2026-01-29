@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,7 @@ from soion_sentiment.config import load_config
 from soion_sentiment.data.collate import build_dataloader
 from soion_sentiment.data.phrasebank import load_phrasebank_splits
 from soion_sentiment.data.tokenize import build_tokenizer, tokenize_dataset
-from soion_sentiment.training.manifest import build_data_manifest, write_data_manifest
+from soion_sentiment.data.manifest import build_data_manifest, write_data_manifest
 from soion_sentiment.training.run import run_train
 
 
@@ -40,6 +42,13 @@ def _model_cached(model_name: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def _phrasebank_ready(seed: int) -> bool:
+    data_root = Path("data")
+    hf_root = data_root / "phrasebank_local_v1"
+    proc_root = data_root / "processed" / "phrasebank" / "66agree" / str(seed)
+    return hf_root.exists() and (proc_root / "indices.json").exists()
 
 
 def test_smoke_training(tmp_path: Path) -> None:
@@ -177,3 +186,43 @@ def test_hf_offline_cache_wiring(tmp_path: Path) -> None:
     cfg = load_config(cfg_path)
     assert cfg.runtime.hf_offline is True
     assert cfg.runtime.hf_cache_dir == str(tmp_path / "hf_cache")
+
+
+def test_manifest_semantic_filters(tmp_path: Path) -> None:
+    cfg = load_config("configs/base.yaml")
+    manifest = build_data_manifest(cfg)
+    paths = [f["path"] for f in manifest["files"]]
+    assert all("/cache-" not in p for p in paths)
+    assert all(not p.endswith(".lock") for p in paths)
+    if cfg.data.agree:
+        agree_dirs = {p.split("/")[2] for p in paths if p.startswith("data/phrasebank_local_v1/")}
+        agree_dirs.discard("dataset_dict.json")
+        assert agree_dirs <= {cfg.data.agree}
+    seed_dirs = {p.split("/")[3] for p in paths if p.startswith("data/processed/phrasebank/")}
+    assert seed_dirs <= {str(cfg.seed)}
+
+
+def test_smoke_train_eval_scripts(tmp_path: Path) -> None:
+    cfg = load_config("configs/base.yaml")
+    if not _model_cached(cfg.model.backbone):
+        pytest.skip("base model not cached; skipping smoke script test")
+    if not _phrasebank_ready(cfg.seed):
+        pytest.skip("phrasebank data not ready; skipping smoke script test")
+
+    run_root = tmp_path / "runs"
+    train_cmd = [
+        sys.executable,
+        "scripts/smoke_train.py",
+        "--config",
+        "configs/base.yaml",
+        "--run-dir",
+        str(run_root),
+        "--keep-artifacts",
+    ]
+    subprocess.run(train_cmd, check=True)
+
+    eval_cmd = [sys.executable, "scripts/smoke_eval.py", "--run-dir", str(run_root), "--keep-artifacts"]
+    subprocess.run(eval_cmd, check=True)
+
+    eval_summary = next(run_root.rglob("eval_summary.json"), None)
+    assert eval_summary is not None and eval_summary.exists()

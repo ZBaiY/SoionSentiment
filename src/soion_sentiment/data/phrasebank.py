@@ -126,15 +126,19 @@ def load_phrasebank_splits(
     n_total = len(base)
 
     # Load indices truth
-    indices_path = proc_root / agree / str(seed) / "indices.json"
+    agree_key = agree
+    if agree_key.startswith("sentences_"):
+        agree_key = agree_key.replace("sentences_", "", 1)
+    indices_path = proc_root / agree_key / str(seed) / "indices.json"
     indices_obj = _read_json(indices_path)
 
     if not isinstance(indices_obj, Mapping):
         raise PhraseBankContractError(f"indices.json must be an object with keys train/val/test: {indices_path}")
 
-    train_idx = _as_int_list(indices_obj.get("train"), name="train")
-    val_idx = _as_int_list(indices_obj.get("val"), name="val")
-    test_idx = _as_int_list(indices_obj.get("test"), name="test")
+    splits_obj = indices_obj.get("splits") if "splits" in indices_obj else indices_obj
+    train_idx = _as_int_list(splits_obj.get("train"), name="train")
+    val_idx = _as_int_list(splits_obj.get("val"), name="val")
+    test_idx = _as_int_list(splits_obj.get("test"), name="test")
 
     # Hard gates: disjoint + in-range
     _ensure_disjoint(("train", train_idx), ("val", val_idx), ("test", test_idx))
