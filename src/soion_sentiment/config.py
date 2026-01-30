@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, get_type_hints
 
@@ -60,10 +60,15 @@ class TrainingConfig:
     grad_accum_steps: int
     max_grad_norm: float | None
     max_steps: int | None
-    eval_every_steps: int | None
     label_smoothing: float
     imbalance_strategy: str
     early_stopping: EarlyStoppingConfig
+    eval_every_steps: int | None = None
+    eval_log_every_steps: int | None = None
+    eval_stop_every_steps: int | None = None
+    eval_stop_every_epochs: int | None = 1
+    eval_log_max_samples: int | None = None
+    eval_stop_max_samples: int | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +178,16 @@ class Config:
             raise ValueError("training.grad_accum_steps must be >= 1")
         if self.training.eval_every_steps is not None and self.training.eval_every_steps <= 0:
             raise ValueError("training.eval_every_steps must be positive when set")
+        if self.training.eval_log_every_steps is not None and self.training.eval_log_every_steps <= 0:
+            raise ValueError("training.eval_log_every_steps must be positive when set")
+        if self.training.eval_stop_every_steps is not None and self.training.eval_stop_every_steps <= 0:
+            raise ValueError("training.eval_stop_every_steps must be positive when set")
+        if self.training.eval_stop_every_epochs is not None and self.training.eval_stop_every_epochs <= 0:
+            raise ValueError("training.eval_stop_every_epochs must be positive when set")
+        if self.training.eval_log_max_samples is not None and self.training.eval_log_max_samples <= 0:
+            raise ValueError("training.eval_log_max_samples must be positive when set")
+        if self.training.eval_stop_max_samples is not None and self.training.eval_stop_max_samples <= 0:
+            raise ValueError("training.eval_stop_max_samples must be positive when set")
         if self.data.max_length <= 0:
             raise ValueError("data.max_length must be > 0")
         if self.train.optimizer not in {"adamw", "adafactor"}:
@@ -240,6 +255,12 @@ def _from_dict(cls: type[Any], data: dict[str, Any]) -> Any:
     kwargs: dict[str, Any] = {}
     for name, f in field_map.items():
         if name not in data:
+            if f.default is not MISSING or f.default_factory is not MISSING:
+                if f.default is not MISSING:
+                    kwargs[name] = f.default
+                else:
+                    kwargs[name] = f.default_factory()
+                continue
             raise ValueError(f"missing required key {cls.__name__}.{name}")
         val = data[name]
         f_type = type_map.get(name, f.type)

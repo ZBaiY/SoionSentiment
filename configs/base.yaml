@@ -43,8 +43,13 @@ training:
   eval_batch_size: 16
   grad_accum_steps: 1
   max_grad_norm: 1.0
-  max_steps: null
-  eval_every_steps: null
+  max_steps: null           # if set, overrides epochs
+  eval_log_every_steps: 1   # How often to run evaluation purely for logging/monitoring purposes.
+  eval_log_max_samples: 40   # Max number of validation samples to use for "logging eval". No need to be very large, just for monitoring.
+  eval_stop_every_steps: null   # How often to run evaluation that is allowed to update early-stopping, less frequent than eval_log_every_steps.
+  eval_stop_max_samples: null  # Max number of validation samples to use for "early stopping eval". Default null = full validation set. Larger is more stable.
+  # This matches the common "epoch-level early stopping" semantics.
+  eval_stop_every_epochs: 1    # If eval_stop_every_steps is null, run stop-eval once at the end of each epoch.
   label_smoothing: 0.0
   imbalance_strategy: none
   early_stopping:           # early stopping config, this is used to stop training when eval metric does not improve for certain number of evals
@@ -99,14 +104,14 @@ eval:
 logging:
   run_dir: runs
   run_name: null
-  log_every_steps: 50
-  metrics_filename: metrics.jsonl
-  train_log_every_steps: 20
-  train_log_filename: train.jsonl
-  events_filename: events.jsonl
+  log_every_steps: 1
+  train_log_every_steps: 1
   log_grad_norm: true
   log_param_norm: false
   log_throughput: true
+  metrics_filename: metrics.jsonl
+  train_log_filename: train.jsonl
+  events_filename: events.jsonl
   summary_filename: summary.json
   save_best: true       # save the best checkpoint according to eval metric
   save_last: true       # always save the last checkpoint

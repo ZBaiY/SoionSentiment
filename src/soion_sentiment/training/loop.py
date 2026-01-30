@@ -26,7 +26,6 @@ def _maybe_oom(e: RuntimeError) -> bool:
     return "out of memory" in msg or "mps backend out of memory" in msg
 
 
-
 def _log_jsonl(path: Path, record: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
@@ -203,25 +202,103 @@ def _compute_training_steps(cfg: Config, train_loader_len: int) -> tuple[int, in
     return steps_per_epoch, total_steps, total_epochs
 
 
-def _eval_epoch(model, loader: DataLoader, device: torch.device, cfg: Config) -> dict[str, Any]:
+def _eval_epoch(
+    model,
+    loader: DataLoader,
+    device: torch.device,
+    cfg: Config,
+    *,
+    loss_fn,
+    max_samples: int | None = None,
+) -> dict[str, Any]:
     was_training = model.training
     model.eval()
     preds: list[int] = []
     labels: list[int] = []
+    seen = 0
+    loss_sum = 0.0
     with torch.no_grad():
         for batch in loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             out = model(**batch)
             logits = out.logits
-            batch_preds = torch.argmax(logits, dim=-1).detach().cpu().tolist()
             labels_tensor = batch["labels"] if "labels" in batch else batch["label"]
+            remaining = None
+            if max_samples is not None:
+                remaining = max_samples - seen
+                if remaining <= 0:
+                    break
+                if labels_tensor.shape[0] > remaining:
+                    # Truncate once, at tensor level, so loss/preds/labels share the same subset.
+                    logits = logits[:remaining]
+                    labels_tensor = labels_tensor[:remaining]
+            loss = loss_fn(logits, labels_tensor)
+            batch_preds = torch.argmax(logits, dim=-1).detach().cpu().tolist()
             batch_labels = labels_tensor.detach().cpu().tolist()
             preds.extend(batch_preds)
             labels.extend(batch_labels)
+            seen += len(batch_labels)
+            loss_sum += float(loss.item()) * len(batch_labels)
     metrics = compute_metrics(preds, labels, cfg)
+    eval_samples = len(labels)
+    metrics["eval_samples"] = eval_samples
+    # Eval loss is distinct from train loss; never alias it to "loss".
+    metrics["eval_loss"] = (loss_sum / eval_samples) if eval_samples > 0 else None
+    if max_samples is not None:
+        metrics["max_samples"] = max_samples
     if was_training:
         model.train()
     return metrics
+
+
+def _metric_improved(current: float | None, best: float | None, mode: str, min_delta: float) -> bool:
+    if current is None:
+        return False
+    if best is None:
+        return True
+    if mode == "max":
+        return current > best + min_delta
+    if mode == "min":
+        return current < best - min_delta
+    return False
+
+
+def _log_eval_event_to_train_log(
+    train_log_path: Path,
+    *,
+    eval_kind: str,
+    epoch: int,
+    step: int,
+    step_in_epoch: int,
+    eval_metrics: dict[str, Any],
+    max_samples: int | None,
+    did_improve: bool | None,
+    should_stop: bool | None,
+    best_metric: float | None,
+    best_step: int | None,
+    early_no_improve: int | None,
+) -> None:
+    # train.jsonl is the authoritative timeline; metrics.jsonl mirrors these eval rows if enabled.
+    metrics = {k: v for k, v in eval_metrics.items() if k not in {"split", "epoch", "step"}}
+    if "loss" in metrics:
+        metrics.pop("loss")
+    rec = {
+        "event": "eval",
+        "eval_kind": eval_kind,
+        "ts_ms": int(time.time() * 1000),
+        "epoch": epoch,
+        "step": step,
+        "step_in_epoch": step_in_epoch,
+        "split": "eval",
+        "metrics": metrics,
+        "max_samples": max_samples,
+        "did_improve": did_improve,
+        "should_stop": should_stop,
+        "best_metric": best_metric,
+        "best_step": best_step,
+        "early_no_improve": early_no_improve,
+    }
+    _safe_log_jsonl(train_log_path, rec)
 
 
 def _handle_eval(
@@ -237,7 +314,8 @@ def _handle_eval(
     step: int,
     state: dict[str, Any],
     save_last: bool,
-) -> bool:
+) -> tuple[bool, bool]:
+    # Return (should_stop_training, did_improve); eval handling must not break epoch unless early stop triggers.
     state.setdefault("best_metric", None) ## -- .get + if not exists -> None, align schema
     state.setdefault("best_epoch", 0)
     state.setdefault("best_step", 0)
@@ -245,14 +323,7 @@ def _handle_eval(
     state.setdefault("early_no_improve", 0)
     metric_key = cfg.eval.metric
     current = eval_metrics.get(metric_key)
-    improved = False
-    if current is not None:
-        if state["best_metric"] is None:
-            improved = True
-        elif cfg.eval.mode == "max" and current > state["best_metric"]:
-            improved = True
-        elif cfg.eval.mode == "min" and current < state["best_metric"]:
-            improved = True
+    improved = _metric_improved(current, state["best_metric"], cfg.eval.mode, 0.0)
 
     if improved:
         state["best_metric"] = current
@@ -274,18 +345,12 @@ def _handle_eval(
     if cfg.training.early_stopping.enabled:
         early_key = cfg.training.early_stopping.metric
         early_val = eval_metrics.get(early_key)
-        improved_early = False
-        if early_val is not None:
-            if state["early_best_metric"] is None:
-                improved_early = True
-            elif cfg.training.early_stopping.mode == "max" and (
-                early_val > state["early_best_metric"] + cfg.training.early_stopping.min_delta
-            ):
-                improved_early = True
-            elif cfg.training.early_stopping.mode == "min" and (
-                early_val < state["early_best_metric"] - cfg.training.early_stopping.min_delta
-            ):
-                improved_early = True
+        improved_early = _metric_improved(
+            early_val,
+            state["early_best_metric"],
+            cfg.training.early_stopping.mode,
+            cfg.training.early_stopping.min_delta,
+        )
         if improved_early:
             state["early_best_metric"] = early_val
             state["early_no_improve"] = 0
@@ -305,9 +370,12 @@ def _handle_eval(
             metrics=eval_metrics,
         )
 
-    if cfg.training.early_stopping.enabled and state["early_no_improve"] >= cfg.training.early_stopping.patience:
-        return True
-    return False
+    should_stop = (
+        cfg.training.early_stopping.enabled
+        and state["early_no_improve"] >= cfg.training.early_stopping.patience
+    )
+    did_improve = improved_early if cfg.training.early_stopping.enabled else improved
+    return should_stop, did_improve
 
 
 def train(
@@ -379,74 +447,61 @@ def train(
         if gc_every is None:
             gc_every = 25
 
+    # Logging eval and early-stopping eval are intentionally decoupled:
+    # frequent logging eval should never control training flow or early stopping.
+    eval_log_every_steps = cfg.training.eval_log_every_steps
+    if eval_log_every_steps is None and cfg.training.eval_every_steps is not None:
+        # Legacy eval_every_steps is monitoring-only; it never affects early stopping.
+        eval_log_every_steps = cfg.training.eval_every_steps
+    eval_stop_every_steps = cfg.training.eval_stop_every_steps
+    eval_stop_every_epochs = cfg.training.eval_stop_every_epochs
+
+    def _get_eval_max_samples(eval_kind: str) -> int | None:
+        # Logging eval must be cheap; stop eval must be decision-grade.
+        # We apply limits at evaluation time only and never mutate cfg.data.max_eval_samples.
+        if eval_kind == "log":
+            if cfg.training.eval_log_max_samples is not None:
+                return cfg.training.eval_log_max_samples
+            return cfg.data.max_eval_samples
+        if eval_kind == "stop":
+            if cfg.training.eval_stop_max_samples is not None:
+                return cfg.training.eval_stop_max_samples
+            return cfg.data.max_eval_samples
+        return None
+
     global_step = 0
-    for epoch in range(1, total_epochs + 1):
-        model.train() # -- set model to training mode
-        running_loss = 0.0
-        step_in_epoch = 0
-        should_stop = False
-        try:
-            total_batches = len(train_loader)
-        except TypeError:
-            total_batches = None
-        pbar = tqdm(
-            total=total_batches,
-            desc=f"epoch {epoch}/{total_epochs}",
-            leave=False,
-            unit="batch",
-        )
-
-        for batch in train_loader:
-            step_in_epoch += 1
-
-            ## ---- The initial training step: generating gradients for micro-batches ---- ##
+    try:
+        for epoch in range(1, total_epochs + 1):
+            model.train() # -- set model to training mode
+            running_loss = 0.0
+            step_in_epoch = 0
+            should_stop = False
             try:
-                batch = {k: v.to(device) for k, v in batch.items()} # everything needs to be on the right device
+                total_batches = len(train_loader)
+            except TypeError:
+                total_batches = None
+            pbar = tqdm(
+                total=total_batches,
+                desc=f"epoch {epoch}/{total_epochs}",
+                leave=False,
+                unit="batch",
+            )
 
-                labels_tensor = batch["labels"] if "labels" in batch else batch["label"]
-                with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
-                    out = model(**batch)
-                    logits = out.logits         # -- the last layer output before softmax, shape (batch_size, num_labels)
-                    loss = loss_fn(logits, labels_tensor) # -- compute loss, scalar loss; defines d(loss)/d(logits) etc
-                    loss = loss / cfg.training.grad_accum_steps # -- normalize loss for gradient accumulation
-                if torch.isnan(loss).any():
-                    event = {
-                        "event": "nan_loss",
-                        "epoch": epoch,
-                        "step": global_step,
-                        "step_in_epoch": step_in_epoch,
-                        "mem": _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps),
-                        "tail": list(train_tail),
-                    }
-                    _safe_log_jsonl(events_path, event)
-                    raise RuntimeError("NaN loss encountered")
-                if torch.isinf(loss).any():
-                    event = {
-                        "event": "inf_loss",
-                        "epoch": epoch,
-                        "step": global_step,
-                        "step_in_epoch": step_in_epoch,
-                        "mem": _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps),
-                        "tail": list(train_tail),
-                    }
-                    _safe_log_jsonl(events_path, event)
-                    raise RuntimeError("Inf loss encountered")
-                if scaler.is_enabled():
-                    scaler.scale(loss).backward()  # -- accumulate them in param.grad，通过param.grad存储梯度到每个参数，scaler.scale用于混合精度训练时放大梯度以防止下溢
-                else:
-                    loss.backward()
-                del out, logits
-                if cfg.train.detect_anomaly:
-                    has_bad_grad = False
-                    for p in model.parameters():
-                        if p.grad is None:
-                            continue
-                        if not torch.isfinite(p.grad).all():
-                            has_bad_grad = True
-                            break
-                    if has_bad_grad:
+            for batch in train_loader:
+                step_in_epoch += 1
+                ## ---- The initial training step: generating gradients for micro-batches ---- ##
+                try:
+                    batch = {k: v.to(device) for k, v in batch.items()} # everything needs to be on the right device
+
+                    labels_tensor = batch["labels"] if "labels" in batch else batch["label"]
+                    with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+                        out = model(**batch)
+                        logits = out.logits         # -- the last layer output before softmax, shape (batch_size, num_labels)
+                        loss = loss_fn(logits, labels_tensor) # -- compute loss, scalar loss; defines d(loss)/d(logits) etc
+                        loss = loss / cfg.training.grad_accum_steps # -- normalize loss for gradient accumulation
+                    if torch.isnan(loss).any():
                         event = {
-                            "event": "nan_grad",
+                            "event": "nan_loss",
                             "epoch": epoch,
                             "step": global_step,
                             "step_in_epoch": step_in_epoch,
@@ -454,227 +509,335 @@ def train(
                             "tail": list(train_tail),
                         }
                         _safe_log_jsonl(events_path, event)
-                        raise RuntimeError("Non-finite gradients encountered")
-
-            ## ---- Monitor for out-of-memory errors ---- ##
-            except RuntimeError as e:
-                if _maybe_oom(e):
-                    snapshot = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
-                    snapshot.update({"split": "mem_oom", "epoch": epoch, "step": global_step})
-                    _safe_log_jsonl(metrics_path, snapshot)
-                    _safe_log_jsonl(
-                        events_path,
-                        {
-                            "event": "oom",
+                        raise RuntimeError("NaN loss encountered")
+                    if torch.isinf(loss).any():
+                        event = {
+                            "event": "inf_loss",
                             "epoch": epoch,
                             "step": global_step,
-                            "mem": snapshot,
+                            "step_in_epoch": step_in_epoch,
+                            "mem": _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps),
                             "tail": list(train_tail),
-                        },
-                    )
-                    rss = snapshot.get("rss_gb")
-                    rss_peak = _rss_peak_gb()
-                    mps_cur = snapshot.get("mps_current_gb")
-                    mps_drv = snapshot.get("mps_driver_gb")
-                    raise RuntimeError(
-                        "Out of memory during training step. Reduce batch size or max_length. "
-                        f"rss_gb={rss if rss is not None else 'n/a'} "
-                        f"rss_peak_gb={rss_peak if rss_peak is not None else 'n/a'} "
-                        f"mps_cur_gb={mps_cur if mps_cur is not None else 'n/a'} "
-                        f"mps_drv_gb={mps_drv if mps_drv is not None else 'n/a'}"
-                    ) from e
-                raise
-
-            ## ---- Gradient accumulation and optimization step, core learning loop ---- ##
-            if step_in_epoch % cfg.training.grad_accum_steps == 0:
-                grad_norm = None
-                if scaler.is_enabled():
-                    scaler.unscale_(optimizer)  # unscale 到真实的梯度值
-                    if cfg.logging.log_grad_norm:
-                        if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
-                            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                        else:
-                            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
+                        }
+                        _safe_log_jsonl(events_path, event)
+                        raise RuntimeError("Inf loss encountered")
+                    if scaler.is_enabled():
+                        scaler.scale(loss).backward()  # -- accumulate them in param.grad，通过param.grad存储梯度到每个参数，scaler.scale用于混合精度训练时放大梯度以防止下溢
                     else:
-                        if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                    scaler.step(optimizer) # 更新参数
-                    scaler.update() # 更新scaler的缩放因子
-                    optimizer.zero_grad(set_to_none=True) # 清空梯度，为下一次累积做准备（param.grad是加和累积，需要清零）
-                else:
-                    if cfg.logging.log_grad_norm:
-                        if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
-                            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                        else:
-                            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
-                    else:
-                        if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                scheduler.step() # 更新学习率调度器
-                global_step += 1 # 训练的全局步数
-                if gc_every is not None and global_step % gc_every == 0:
-                    gc.collect()
-                if empty_cache_every is not None and global_step % empty_cache_every == 0:
-                    gc.collect()
-                    if torch.backends.mps.is_available():
-                        torch.mps.synchronize()
-                        torch.mps.empty_cache()
-                if device.type == "mps":
-                    mps_cur, mps_drv = _mps_mem_gb()
-                    if mps_drv is not None and mps_drv > 16.0:
-                        gc.collect()
-                        torch.mps.synchronize()
-                        torch.mps.empty_cache()
-                        _log_jsonl(
-                            metrics_path,
-                            {"split": "mem_event", "epoch": epoch, "step": global_step, "event": "mps_driver_runaway"},
-                        )
-
-                running_loss += loss.item() * cfg.training.grad_accum_steps # accumulate actual loss value
-                current_loss = loss.item() * cfg.training.grad_accum_steps
-                if ema_loss is None:
-                    ema_loss = current_loss
-                else:
-                    ema_loss = ema_alpha * current_loss + (1.0 - ema_alpha) * ema_loss
-                if global_step % train_log_every == 0:
-                    lr = optimizer.param_groups[0]["lr"]
-                    seq_len = None
-                    if "input_ids" in batch:
-                        seq_len = int(batch["input_ids"].shape[-1])
-                    batch_size = int(next(iter(batch.values())).shape[0]) if batch else 0
-                    tokens = batch_size * (seq_len if seq_len is not None else 0)
-                    now = time.perf_counter()
-                    step_time = now - last_step_time
-                    last_step_time = now
-                    rec = {
-                        "split": "train",
-                        "epoch": epoch,
-                        "step": global_step,
-                        "step_in_epoch": step_in_epoch,
-                        "loss": float(ema_loss if ema_loss is not None else current_loss),
-                        "lr": lr,
-                        "grad_norm": float(grad_norm) if (cfg.logging.log_grad_norm and grad_norm is not None) else None,
-                        "batch_size": batch_size,
-                        "seq_len": seq_len,
-                        "tokens_per_step": tokens,
-                    }
-                    if cfg.logging.log_param_norm:
-                        total = 0.0
+                        loss.backward()
+                    del out, logits
+                    if cfg.train.detect_anomaly:
+                        has_bad_grad = False
                         for p in model.parameters():
-                            total += float(torch.norm(p.detach(), p=2).item()) ** 2
-                        rec["param_norm"] = total ** 0.5
-                    if cfg.logging.log_throughput:
-                        rec["step_time_s"] = step_time
-                        rec["steps_per_s"] = (1.0 / step_time) if step_time > 0 else None
-                        rec["tokens_per_s"] = (tokens / step_time) if step_time > 0 else None
-                    mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
-                    for k in ("mps_current_gb", "mps_driver_gb", "rss_gb", "uss_gb"):
-                        if k in mem:
-                            rec[k] = mem[k]
-                    _safe_log_jsonl(train_log_path, rec)
-                    train_tail.append(rec)
-                del loss, labels_tensor, batch
-                if global_step % cfg.logging.log_every_steps == 0:
-                    _log_jsonl(
-                        metrics_path,
-                        {
+                            if p.grad is None:
+                                continue
+                            if not torch.isfinite(p.grad).all():
+                                has_bad_grad = True
+                                break
+                        if has_bad_grad:
+                            event = {
+                                "event": "nan_grad",
+                                "epoch": epoch,
+                                "step": global_step,
+                                "step_in_epoch": step_in_epoch,
+                                "mem": _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps),
+                                "tail": list(train_tail),
+                            }
+                            _safe_log_jsonl(events_path, event)
+                            raise RuntimeError("Non-finite gradients encountered")
+
+                ## ---- Monitor for out-of-memory errors ---- ##
+                except RuntimeError as e:
+                    if _maybe_oom(e):
+                        snapshot = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
+                        snapshot.update({"split": "mem_oom", "epoch": epoch, "step": global_step})
+                        _safe_log_jsonl(metrics_path, snapshot)
+                        _safe_log_jsonl(
+                            events_path,
+                            {
+                                "event": "oom",
+                                "epoch": epoch,
+                                "step": global_step,
+                                "mem": snapshot,
+                                "tail": list(train_tail),
+                            },
+                        )
+                        rss = snapshot.get("rss_gb")
+                        rss_peak = _rss_peak_gb()
+                        mps_cur = snapshot.get("mps_current_gb")
+                        mps_drv = snapshot.get("mps_driver_gb")
+                        raise RuntimeError(
+                            "Out of memory during training step. Reduce batch size or max_length. "
+                            f"rss_gb={rss if rss is not None else 'n/a'} "
+                            f"rss_peak_gb={rss_peak if rss_peak is not None else 'n/a'} "
+                            f"mps_cur_gb={mps_cur if mps_cur is not None else 'n/a'} "
+                            f"mps_drv_gb={mps_drv if mps_drv is not None else 'n/a'}"
+                        ) from e
+                    raise
+
+                ## ---- Gradient accumulation and optimization step, core learning loop ---- ##
+                if step_in_epoch % cfg.training.grad_accum_steps == 0:
+                    grad_norm = None
+                    if scaler.is_enabled():
+                        scaler.unscale_(optimizer)  # unscale 到真实的梯度值
+                        if cfg.logging.log_grad_norm:
+                            if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
+                                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                            else:
+                                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
+                        else:
+                            if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                        scaler.step(optimizer) # 更新参数
+                        scaler.update() # 更新scaler的缩放因子
+                        optimizer.zero_grad(set_to_none=True) # 清空梯度，为下一次累积做准备（param.grad是加和累积，需要清零）
+                    else:
+                        if cfg.logging.log_grad_norm:
+                            if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
+                                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                            else:
+                                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
+                        else:
+                            if cfg.training.max_grad_norm is not None: # 梯度方向不变，但幅度被裁剪到max_grad_norm以内，控制学习率防止发散
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                        optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                    scheduler.step() # 更新学习率调度器
+                    global_step += 1 # 训练的全局步数
+                    if gc_every is not None and global_step % gc_every == 0:
+                        gc.collect()
+                    if empty_cache_every is not None and global_step % empty_cache_every == 0:
+                        gc.collect()
+                        if torch.backends.mps.is_available():
+                            torch.mps.synchronize()
+                            torch.mps.empty_cache()
+                    if device.type == "mps":
+                        mps_cur, mps_drv = _mps_mem_gb()
+                        if mps_drv is not None and mps_drv > 16.0:
+                            gc.collect()
+                            torch.mps.synchronize()
+                            torch.mps.empty_cache()
+                            _log_jsonl(
+                                metrics_path,
+                                {"split": "mem_event", "epoch": epoch, "step": global_step, "event": "mps_driver_runaway"},
+                            )
+
+                    running_loss += loss.item() * cfg.training.grad_accum_steps # accumulate actual loss value
+                    current_loss = loss.item() * cfg.training.grad_accum_steps
+                    if ema_loss is None:
+                        ema_loss = current_loss
+                    else:
+                        ema_loss = ema_alpha * current_loss + (1.0 - ema_alpha) * ema_loss
+                    if global_step % train_log_every == 0:
+                        lr = optimizer.param_groups[0]["lr"]
+                        seq_len = None
+                        if "input_ids" in batch:
+                            seq_len = int(batch["input_ids"].shape[-1])
+                        batch_size = int(next(iter(batch.values())).shape[0]) if batch else 0
+                        tokens = batch_size * (seq_len if seq_len is not None else 0)
+                        now = time.perf_counter()
+                        step_time = now - last_step_time
+                        last_step_time = now
+                        rec = {
                             "split": "train",
                             "epoch": epoch,
                             "step": global_step,
-                            "loss": running_loss / cfg.logging.log_every_steps,
-                        },
-                    )
-                    running_loss = 0.0
-                if global_step % update_every == 0:
-                    mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
-                    mem.update({"split": "mem", "epoch": epoch, "step": global_step})
-                    _log_jsonl(metrics_path, mem)
+                            "step_in_epoch": step_in_epoch,
+                            "loss": float(ema_loss if ema_loss is not None else current_loss),
+                            "lr": lr,
+                            "grad_norm": float(grad_norm) if (cfg.logging.log_grad_norm and grad_norm is not None) else None,
+                            "batch_size": batch_size,
+                            "seq_len": seq_len,
+                            "tokens_per_step": tokens,
+                        }
+                        if cfg.logging.log_param_norm:
+                            total = 0.0
+                            for p in model.parameters():
+                                total += float(torch.norm(p.detach(), p=2).item()) ** 2
+                            rec["param_norm"] = total ** 0.5
+                        if cfg.logging.log_throughput:
+                            rec["step_time_s"] = step_time
+                            rec["steps_per_s"] = (1.0 / step_time) if step_time > 0 else None
+                            rec["tokens_per_s"] = (tokens / step_time) if step_time > 0 else None
+                        mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
+                        for k in ("mps_current_gb", "mps_driver_gb", "rss_gb", "uss_gb"):
+                            if k in mem:
+                                rec[k] = mem[k]
+                        _safe_log_jsonl(train_log_path, rec)
+                        train_tail.append(rec)
+                    del loss, labels_tensor, batch
+                    if global_step % cfg.logging.log_every_steps == 0:
+                        _log_jsonl(
+                            metrics_path,
+                            {
+                                "split": "train",
+                                "epoch": epoch,
+                                "step": global_step,
+                                "loss": running_loss / cfg.logging.log_every_steps,
+                            },
+                        )
+                        running_loss = 0.0
+                    if global_step % update_every == 0:
+                        mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
+                        mem.update({"split": "mem", "epoch": epoch, "step": global_step})
+                        _log_jsonl(metrics_path, mem)
 
-                ## -- periodic evaluation during training -- ##
-                if cfg.training.eval_every_steps is not None and global_step % cfg.training.eval_every_steps == 0:
-                    pbar.close()
-                    eval_metrics = _eval_epoch(model, val_loader, device, cfg)
-                    eval_metrics.update({"split": "val", "epoch": epoch, "step": global_step})
-                    _log_jsonl(metrics_path, eval_metrics)  ## To monitor overfitting or other issues during training
-                    gc.collect()
-                    if torch.backends.mps.is_available():
-                        torch.mps.empty_cache()
-                    if _handle_eval(
-                        cfg,
-                        eval_metrics=eval_metrics,
-                        run_dir=run_dir,
-                        model=model,
-                        tokenizer=tokenizer,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        epoch=epoch,
-                        step=global_step,
-                        state=state,
-                        save_last=False,
-                    ):
-                        should_stop = True
-                        break
-                    pbar = tqdm(
-                        total=total_batches,
-                        initial=step_in_epoch,
-                        desc=f"epoch {epoch}/{total_epochs}",
-                        leave=False,
-                        unit="batch",
-                    )
+                    # Logging eval is for monitoring only; it never affects early stopping or control flow.
+                    if eval_log_every_steps is not None and global_step % eval_log_every_steps == 0:
+                        max_samples = _get_eval_max_samples("log")
+                        eval_metrics = _eval_epoch(
+                            model,
+                            val_loader,
+                            device,
+                            cfg,
+                            loss_fn=loss_fn,
+                            max_samples=max_samples,
+                        )
+                        eval_metrics.update({"split": "eval_log", "epoch": epoch, "step": global_step})
+                        _log_jsonl(metrics_path, eval_metrics)
+                        gc.collect()
+                        if torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                        _log_eval_event_to_train_log(
+                            train_log_path,
+                            eval_kind="log",
+                            epoch=epoch,
+                            step=global_step,
+                            step_in_epoch=step_in_epoch,
+                            eval_metrics=eval_metrics,
+                            max_samples=max_samples,
+                            did_improve=None,
+                            should_stop=None,
+                            best_metric=None,
+                            best_step=None,
+                            early_no_improve=None,
+                        )
+                        pbar.refresh()
+
+                    # Stop-eval is the only place that updates early-stopping state and can end training.
+                    if eval_stop_every_steps is not None and global_step % eval_stop_every_steps == 0:
+                        max_samples = _get_eval_max_samples("stop")
+                        eval_metrics = _eval_epoch(
+                            model,
+                            val_loader,
+                            device,
+                            cfg,
+                            loss_fn=loss_fn,
+                            max_samples=max_samples,
+                        )
+                        eval_metrics.update({"split": "eval_stop", "epoch": epoch, "step": global_step})
+                        _log_jsonl(metrics_path, eval_metrics)
+                        gc.collect()
+                        if torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                        should_stop, did_improve = _handle_eval(
+                            cfg,
+                            eval_metrics=eval_metrics,
+                            run_dir=run_dir,
+                            model=model,
+                            tokenizer=tokenizer,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            epoch=epoch,
+                            step=global_step,
+                            state=state,
+                            save_last=True,
+                        )
+                        _log_eval_event_to_train_log(
+                            train_log_path,
+                            eval_kind="stop",
+                            epoch=epoch,
+                            step=global_step,
+                            step_in_epoch=step_in_epoch,
+                            eval_metrics=eval_metrics,
+                            max_samples=max_samples,
+                            did_improve=did_improve,
+                            should_stop=should_stop,
+                            best_metric=state.get("best_metric"),
+                            best_step=state.get("best_step"),
+                            early_no_improve=state.get("early_no_improve"),
+                        )
+                        if should_stop:
+                            break
+                        pbar.refresh()
+
+                if cfg.training.max_steps is not None and global_step >= cfg.training.max_steps:
+                    break
+
+                ## -- finish one epoch --
+                if step_in_epoch % update_every == 0:
+                    lr = optimizer.param_groups[0]["lr"]
+                    postfix: dict[str, Any] = {
+                        "gstep": global_step,
+                        "lr": f"{lr:.3e}",
+                        "loss": f"{ema_loss:.4f}" if ema_loss is not None else "n/a",
+                    }
+                    mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
+                    if "rss_gb" in mem:
+                        postfix["rss_gb"] = f"{mem['rss_gb']:.2f}"
+                    if "vms_gb" in mem:
+                        postfix["vms_gb"] = f"{mem['vms_gb']:.2f}"
+                    if "uss_gb" in mem:
+                        postfix["uss_gb"] = f"{mem['uss_gb']:.2f}"
+                    if "mps_current_gb" in mem:
+                        postfix["mps"] = f"{mem['mps_current_gb']:.2f}/{mem.get('mps_driver_gb', 0):.2f}"
+                    pbar.set_postfix(postfix, refresh=True)
+                pbar.update(1)
+
+            pbar.close()
+            if should_stop:
+                break
+
+            ## ---- End of epoch stop-eval (early-stopping / best checkpoints) ---- ##
+            if eval_stop_every_steps is None and eval_stop_every_epochs is not None and epoch % eval_stop_every_epochs == 0:
+                max_samples = _get_eval_max_samples("stop")
+                eval_metrics = _eval_epoch(
+                    model,
+                    val_loader,
+                    device,
+                    cfg,
+                    loss_fn=loss_fn,
+                    max_samples=max_samples,
+                )
+                eval_metrics.update({"split": "eval_stop", "epoch": epoch, "step": global_step})
+                _log_jsonl(metrics_path, eval_metrics)
+                gc.collect()
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                should_stop, did_improve = _handle_eval(
+                    cfg,
+                    eval_metrics=eval_metrics,
+                    run_dir=run_dir,
+                    model=model,
+                    tokenizer=tokenizer,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    step=global_step,
+                    state=state,
+                    save_last=True,
+                )
+                _log_eval_event_to_train_log(
+                    train_log_path,
+                    eval_kind="stop",
+                    epoch=epoch,
+                    step=global_step,
+                    step_in_epoch=step_in_epoch,
+                    eval_metrics=eval_metrics,
+                    max_samples=max_samples,
+                    did_improve=did_improve,
+                    should_stop=should_stop,
+                    best_metric=state.get("best_metric"),
+                    best_step=state.get("best_step"),
+                    early_no_improve=state.get("early_no_improve"),
+                )
+                if should_stop:
+                    break
 
             if cfg.training.max_steps is not None and global_step >= cfg.training.max_steps:
                 break
-            
-            ## -- finish one epoch --
-            if step_in_epoch % update_every == 0:
-                lr = optimizer.param_groups[0]["lr"]
-                postfix: dict[str, Any] = {
-                    "gstep": global_step,
-                    "lr": f"{lr:.3e}",
-                    "loss": f"{ema_loss:.4f}" if ema_loss is not None else "n/a",
-                }
-                mem = _mem_snapshot(device, step=global_step, vm_stat_every_steps=cfg.train.vm_stat_every_steps)
-                if "rss_gb" in mem:
-                    postfix["rss_gb"] = f"{mem['rss_gb']:.2f}"
-                if "vms_gb" in mem:
-                    postfix["vms_gb"] = f"{mem['vms_gb']:.2f}"
-                if "uss_gb" in mem:
-                    postfix["uss_gb"] = f"{mem['uss_gb']:.2f}"
-                if "mps_current_gb" in mem:
-                    postfix["mps"] = f"{mem['mps_current_gb']:.2f}/{mem.get('mps_driver_gb', 0):.2f}"
-                pbar.set_postfix(postfix, refresh=True)
-            pbar.update(1)
-
-        pbar.close()
-        if should_stop:
-            break
-
-        ## ---- End of epoch evaluation and checkpointing ---- ##
-        eval_metrics = _eval_epoch(model, val_loader, device, cfg)
-        eval_metrics.update({"split": "val", "epoch": epoch, "step": global_step})
-        _log_jsonl(metrics_path, eval_metrics)
-        gc.collect()
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-        if _handle_eval(
-            cfg,
-            eval_metrics=eval_metrics,
-            run_dir=run_dir,
-            model=model,
-            tokenizer=tokenizer,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            epoch=epoch,
-            step=global_step,
-            state=state,
-            save_last=True,
-        ):
-            break
-
-        if cfg.training.max_steps is not None and global_step >= cfg.training.max_steps:
-            break
+    except Exception:
+        raise
 
     summary = {
         "best_metric": state["best_metric"],
