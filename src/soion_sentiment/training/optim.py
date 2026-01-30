@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import warnings
 
-from transformers import get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
+from transformers import Adafactor, get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 
 from soion_sentiment.config import Config
 
@@ -133,6 +133,41 @@ def build_optimizer(cfg: Config, model) -> torch.optim.Optimizer:
     if not decay_params and not no_decay_params:
         warnings.warn("No trainable parameters found for optimizer.", stacklevel=2)
 
+    name = cfg.train.optimizer.lower()
+    if name == "sgd":
+        return torch.optim.SGD(
+            [
+                {"params": decay_params, "weight_decay": cfg.optim.weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ],
+            lr=cfg.optim.lr,
+        )
+    if name == "adafactor":
+        lr = cfg.train.adafactor_lr if cfg.train.adafactor_lr is not None else cfg.optim.lr
+        return Adafactor(
+            [
+                {"params": decay_params, "weight_decay": cfg.optim.weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ],
+            lr=lr,
+            relative_step=False,
+            scale_parameter=False,
+            warmup_init=False,
+            clip_threshold=1.0,
+        )
+    if name != "adamw":
+        raise ValueError(f"unsupported optimizer: {cfg.train.optimizer}")
+    try:
+        device_type = next(model.parameters()).device.type
+    except StopIteration:
+        device_type = "cpu"
+    if cfg.train.adamw_foreach is None:
+        foreach = device_type == "mps"
+    else:
+        foreach = cfg.train.adamw_foreach
+    fused = None
+    if cfg.train.adamw_fused is not None:
+        fused = cfg.train.adamw_fused and device_type != "mps"
     return torch.optim.AdamW(
         [
             {"params": decay_params, "weight_decay": cfg.optim.weight_decay},
@@ -141,6 +176,8 @@ def build_optimizer(cfg: Config, model) -> torch.optim.Optimizer:
         lr=cfg.optim.lr,
         betas=tuple(cfg.optim.betas),
         eps=cfg.optim.eps,
+        foreach=foreach,
+        **({} if fused is None else {"fused": fused}),
     )
 
 

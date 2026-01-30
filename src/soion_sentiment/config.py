@@ -67,12 +67,39 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class TrainDataloaderConfig:
+    num_workers: int
+    pin_memory: bool
+    persistent_workers: bool
+    prefetch_factor: int | None
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    dataloader: TrainDataloaderConfig
+    precision: str
+    grad_scaler: bool
+    gradient_checkpointing: bool
+    use_cache: bool | None
+    mps_empty_cache_every_steps: int | None
+    gc_collect_every_steps: int | None
+    vm_stat_every_steps: int | None
+    optimizer: str
+    adamw_foreach: bool | None
+    adamw_fused: bool | None
+    adafactor_lr: float | None
+    detect_anomaly: bool
+
+
+@dataclass(frozen=True)
 class OptimConfig:
     lr: float
     weight_decay: float
     decay_embeddings: bool
     betas: list[float]
     eps: float
+    foreach: bool
+    name: str
 
 
 @dataclass(frozen=True)
@@ -99,14 +126,17 @@ class LoggingConfig:
     summary_filename: str
     save_best: bool
     save_last: bool
+    train_log_every_steps: int
+    train_log_filename: str
+    events_filename: str
+    log_grad_norm: bool
+    log_param_norm: bool
+    log_throughput: bool
 
 
 @dataclass(frozen=True)
 class RuntimeConfig:
     device: str
-    precision: str
-    num_workers: int
-    pin_memory: bool
     deterministic: bool
     hf_cache_dir: str | None
     hf_offline: bool
@@ -123,6 +153,7 @@ class Config:
     model: ModelConfig
     tokenizer: TokenizerConfig
     training: TrainingConfig
+    train: TrainConfig
     optim: OptimConfig
     scheduler: SchedulerConfig
     eval: EvalConfig
@@ -144,6 +175,8 @@ class Config:
             raise ValueError("training.eval_every_steps must be positive when set")
         if self.data.max_length <= 0:
             raise ValueError("data.max_length must be > 0")
+        if self.train.optimizer not in {"adamw", "adafactor"}:
+            raise ValueError("train.optimizer must be one of: adamw, adafactor")
         if self.optim.lr <= 0:
             raise ValueError("optim.lr must be > 0")
         if self.scheduler.warmup_steps is not None and self.scheduler.warmup_ratio not in (0.0,):
@@ -173,10 +206,12 @@ class Config:
                 raise ValueError("training.early_stopping.mode must be one of: min, max")
         if self.eval.mode not in {"min", "max"}:
             raise ValueError("eval.mode must be one of: min, max")
-        if self.runtime.precision not in {"fp32", "fp16", "bf16"}:
-            raise ValueError("runtime.precision must be one of: fp32, fp16, bf16")
         if self.runtime.device not in {"auto", "cpu", "cuda", "mps"}:
             raise ValueError("runtime.device must be one of: auto, cpu, cuda, mps")
+        if self.train.precision not in {"fp32", "fp16", "bf16"}:
+            raise ValueError("train.precision must be one of: fp32, fp16, bf16")
+        if self.train.dataloader.num_workers < 0:
+            raise ValueError("train.dataloader.num_workers must be >= 0")
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

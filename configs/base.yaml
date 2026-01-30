@@ -1,6 +1,6 @@
 # Base config (single source of truth)
 project: soion-sentiment
-seed: 42
+seed: 5768
 # Registry pointers:
 # - If a ref is set, the corresponding registry file overlays this base config.
 # - If a ref is null/empty, the base.* section stays as the default.
@@ -17,8 +17,8 @@ data:
   processed_root: null      # if null, use hf_dataset_root/processed
   text_field: text          # the field name for texts in the dataset
   label_field: label        # the field name for labels in the dataset
-  max_length: 256           # maximum sequence length
-  padding: longest          # padding strategy: longest | max_length | do_not_pad
+  max_length: 128           # maximum sequence length
+  padding: max_length       # padding strategy: longest | max_length | do_not_pad, max_length 稳定性好，longest 速度快
   truncation: true          # whether to truncate sequences longer than max_length
   shuffle_train: true       # whether to shuffle training data
   max_train_samples: null   # limit the number of train samples for quick testing
@@ -40,7 +40,7 @@ tokenizer:
 training:
   epochs: 5
   batch_size: 16
-  eval_batch_size: 32
+  eval_batch_size: 16
   grad_accum_steps: 1
   max_grad_norm: 1.0
   max_steps: null
@@ -54,10 +54,34 @@ training:
     patience: 2
     min_delta: 0.0
 
+train:
+  dataloader:
+    num_workers: 0
+    pin_memory: false
+    persistent_workers: false
+    prefetch_factor: null
+  precision: bf16
+  grad_scaler: false
+  gradient_checkpointing: true
+  use_cache: null
+  mps_empty_cache_every_steps: 1
+  gc_collect_every_steps: null
+  vm_stat_every_steps: null
+  optimizer: adamw
+  adamw_foreach: null
+  adamw_fused: null
+  adafactor_lr: null
+  detect_anomaly: false
+
 optim:
+  name: adamw
   lr: 2.0e-5
   weight_decay: 0.01
   decay_embeddings: true  # apply weight decay to embedding weights by default
+  foreach: true # 重要：很多逐参数的小 kernel/小临时张量，合并成 multi-tensor/foreach 的批量操作。削减 optimizer.step 的临时分配碎片和峰值波动，对MPS尤为重要，但舍去的是每步的灵活性（不能单独为某些参数设置不同的学习率等）。
+  ## 逐参数（非 foreach）= “每个参数张量都走一条小流水线”，中间步骤经常生成新的临时张量对象（哪怕很短命），导致 allocator 反复分配不同 size 的块。
+  ##foreach（multi-tensor）= “把很多参数的同类操作打包进一个批处理内核”，尽量把中间步骤在内核里直接算完（不落地成临时张量），或者只用少量可复用的 scratch buffer。对象数变少、分配次数变少、形状种类变少，所以碎片化和峰值抖动被压住。
+  
   betas: [0.9, 0.999]
   eps: 1.0e-8
 
@@ -77,15 +101,18 @@ logging:
   run_name: null
   log_every_steps: 50
   metrics_filename: metrics.jsonl
+  train_log_every_steps: 20
+  train_log_filename: train.jsonl
+  events_filename: events.jsonl
+  log_grad_norm: true
+  log_param_norm: false
+  log_throughput: true
   summary_filename: summary.json
   save_best: true       # save the best checkpoint according to eval metric
   save_last: true       # always save the last checkpoint
 
 runtime:
   device: auto
-  precision: fp32
-  num_workers: 0        # for DataLoader, if >0, use multi-process data loading, seed will be set for each worker, things will be complicated
-  pin_memory: true      # for DataLoader, pin memory on CPU side
   deterministic: true   # set cudnn.deterministic if using CUDA
   hf_cache_dir: null    # HuggingFace cache dir
   hf_offline: false     # HuggingFace offline mode

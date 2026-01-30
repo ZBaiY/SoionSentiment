@@ -35,9 +35,9 @@ def _pick_device(runtime_cfg: RuntimeConfig) -> torch.device:
     return torch.device("cpu")
 
 
-def get_device(runtime_cfg: RuntimeConfig) -> DeviceSpec:
+def get_device(runtime_cfg: RuntimeConfig, train_precision: str) -> DeviceSpec:
     device = _pick_device(runtime_cfg)
-    precision = runtime_cfg.precision
+    precision = train_precision
     autocast_dtype: torch.dtype | None = None
     note: str | None = None
 
@@ -50,11 +50,14 @@ def get_device(runtime_cfg: RuntimeConfig) -> DeviceSpec:
             precision = "fp32"
             note = "fp16 requested but unsupported on cpu; falling back to fp32"
     elif precision == "bf16":
-        if device.type == "cuda" and torch.cuda.is_bf16_supported():
-            autocast_dtype = torch.bfloat16
+        if device.type == "cuda":
+            if torch.cuda.is_bf16_supported():
+                autocast_dtype = torch.bfloat16
+            else:
+                precision = "fp32"
+                note = "bf16 requested but unsupported on cuda; falling back to fp32"
         elif device.type == "mps":
-            precision = "fp32"
-            note = "bf16 requested but unsupported on mps; falling back to fp32"
+            autocast_dtype = torch.bfloat16
         else:
             precision = "fp32"
             note = "bf16 requested but unsupported on cpu; falling back to fp32"

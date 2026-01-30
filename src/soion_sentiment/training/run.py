@@ -73,7 +73,7 @@ def run_train(
         preset_ref=preset_ref,
     )
     set_seed(cfg.seed, cfg.runtime.deterministic) # seeds for data loading, numpy, torch, etc.
-    device_spec = get_device(cfg.runtime)
+    device_spec = get_device(cfg.runtime, cfg.train.precision)
 
     run_dir = _run_dir(cfg) # create run directory, store resolved config and env info and etc.
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ def run_eval(
         model_ref=model_ref,
         preset_ref=preset_ref,
     )
-    device_spec = get_device(cfg.runtime)
+    device_spec = get_device(cfg.runtime, cfg.train.precision)
     tokenizer = build_tokenizer(cfg)
     ds = _build_dataset(cfg, tokenizer)
     loader = build_dataloader(cfg, ds[split], tokenizer, split)

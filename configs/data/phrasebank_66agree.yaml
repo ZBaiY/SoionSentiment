@@ -1,4 +1,4 @@
 data:
   name: phrasebank
-  agree: sentences_66agree
+  agree: sentences_allagree
   split_protocol: precomputed

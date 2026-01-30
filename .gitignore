@@ -63,6 +63,7 @@ tb/
 !data/**/README.md
 !data_manifest.json
 !data/**/data_manifest.json
+/docs/
 
 # --- Model / tokenizer caches (Hugging Face / Transformers) ---
 .hf_cache/
