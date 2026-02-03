@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from soion_sentiment.analysis.mistakes_io import load_mistakes_jsonl, write_mistakes_jsonl
 
 
 def _fake_mistakes(n: int) -> list[dict]:
+    def _sample_id(text: str) -> str:
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
     return [
         {
-            "run_id": "run_1",
             "split": "pb66",
-            "example_id": f"ex_{i}",
+            "sample_id": _sample_id(f"sample {i}"),
             "y_true": "negative",
             "y_pred": "positive",
             "probs": [0.1, 0.2, 0.7],
             "margin": 0.5,
             "text": f"sample {i}",
+            "run_id": "run_1",
         }
         for i in range(n)
     ]
@@ -41,7 +45,7 @@ def test_write_sampled_mistakes_deterministic(tmp_path: Path) -> None:
 
     assert len(rows_a) == 2
     assert len(rows_b) == 2
-    assert [r["example_id"] for r in rows_a] == [r["example_id"] for r in rows_b]
+    assert [r["sample_id"] for r in rows_a] == [r["sample_id"] for r in rows_b]
 
 
 def test_schema_keys_present(tmp_path: Path) -> None:
@@ -49,5 +53,5 @@ def test_schema_keys_present(tmp_path: Path) -> None:
     mistakes = _fake_mistakes(1)
     write_mistakes_jsonl(mistakes, path, max_n=None, seed=1234, run_id="run_1", split="pb66")
     row = load_mistakes_jsonl(path)[0]
-    for key in ["run_id", "split", "example_id", "y_true", "y_pred", "probs", "margin", "text"]:
+    for key in ["run_id", "split", "sample_id", "y_true", "y_pred", "probs", "margin", "text"]:
         assert key in row

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import platform
 import sys
 from datetime import datetime
@@ -35,6 +36,15 @@ def _env_info() -> str:
     return "\n".join(parts) + "\n"
 
 
+def _filter_model_inputs(model: torch.nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
+    params = inspect.signature(model.forward).parameters
+    for param in params.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return batch
+    allowed = {name for name in params if name != "self"}
+    return {key: value for key, value in batch.items() if key in allowed}
+
+
 def _run_dir(cfg: Config) -> Path:
     # Generate a run directory path based on timestamp and config hash.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -49,6 +59,7 @@ def _build_dataset(
     *,
     keep_text: bool = False,
     add_example_id: bool = False,
+    add_sample_id: bool = False,
     add_dataset_row: bool = False,
 ):
     if cfg.data.name != "phrasebank":
@@ -68,6 +79,7 @@ def _build_dataset(
         tokenizer,
         keep_text=keep_text,
         add_example_id=add_example_id,
+        add_sample_id=add_sample_id,
         add_dataset_row=add_dataset_row,
     )
 
@@ -179,7 +191,8 @@ def run_eval(
     with torch.no_grad():            # deactivate gradient calculation for evaluation, save memory (no backprop tracking tables for autograd)
         for batch in loader:
             batch = {k: v.to(device_spec.device) for k, v in batch.items()}
-            out = model(**batch)
+            model_inputs = _filter_model_inputs(model, batch)
+            out = model(**model_inputs)
             logits = out.logits
             preds.extend(torch.argmax(logits, dim=-1).detach().cpu().tolist())
             label_tensor = batch["labels"] if "labels" in batch else batch["label"]
@@ -197,7 +210,6 @@ def run_eval(
                     row_idx = int(dataset_rows[i])
                     raw_row = raw_ds[row_idx]
                     text = raw_row.get("text", "")
-                    example_id = raw_row.get("example_id")
                     token_len = None
                     if "input_ids" in raw_row:
                         token_len = len(raw_row["input_ids"])
@@ -206,9 +218,7 @@ def run_eval(
                         truncated = bool(cfg.data.truncation and token_len >= cfg.data.max_length)
                     mistakes.append(
                         {
-                            "run_id": run_id,
                             "split": split,
-                            "example_id": example_id,
                             "y_true": id2label.get(true_id, str(true_id)),
                             "y_pred": id2label.get(pred_id, str(pred_id)),
                             "probs": probs[i].tolist(),
@@ -219,6 +229,8 @@ def run_eval(
                             "truncated": truncated,
                             "dataset_row": row_idx,
                             "agreement_source": cfg.data.agree,
+                            "run_id": run_id,
+                            "sample_id": raw_row.get("sample_id"),
                         }
                     )
 

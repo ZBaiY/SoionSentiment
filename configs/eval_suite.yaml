@@ -1,5 +1,5 @@
 runs:
-  run_dir: "runs/20260202_pball_none_smoothing00"
+  run_dir: "runs/pb75_reweight_smoothing01_20260203"
   checkpoint: "best"   # best | last | /abs/or/rel/path/to/ckpt_dir
 
 suite:

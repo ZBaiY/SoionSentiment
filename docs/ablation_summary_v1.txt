@@ -1,5 +1,3 @@
-
-
 Ablation Summary (v1)
 
 This document summarizes a set of controlled ablation experiments designed to isolate which factors materially affect the learned decision geometry in sentiment classification on Financial PhraseBank.
@@ -33,6 +31,42 @@ Interpretation at the geometry level: training agreement primarily controls the 
 
 
 On adding 0.1 label smoothing:
+
+Error Characteristics under pb75‑agree + reweight + smoothing:
+
+A closer inspection of misclassified samples under the pb75‑agree training regime with both class reweighting and label smoothing reveals a qualitatively distinct error profile compared to high‑agreement or non‑smoothed baselines. In this setting, errors are dominated by low‑ to moderate‑margin decisions rather than high‑confidence mispredictions. The distribution of prediction margins spans a wide range and does not collapse toward saturation, indicating that most mistakes occur near the decision boundary rather than reflecting overconfident belief in an incorrect class.
+
+Error directions remain strongly structured: the dominant channels are neutral ↔ positive in both directions, while negative ↔ positive confusions are almost entirely absent. This confirms that polarity structure is preserved and that uncertainty is expressed through controlled traversal of the neutral boundary rather than polarity inversion. Compared to non‑smoothed models, neutral no longer functions as a terminal absorbing state; instead, misclassifications exhibit approximately symmetric flow between neutral and positive as agreement decreases.
+
+At the sample level, many errors correspond to semantically ambiguous or forward‑looking statements (e.g., guidance, expectations, factual business arrangements) that are known to exhibit annotation disagreement in PhraseBank. Crucially, these samples are not associated with extreme prediction confidence, supporting the interpretation that the observed errors arise from intrinsic label ambiguity rather than model miscalibration or representational failure. This error profile is consistent with a stable “symmetric buffer” regime in which uncertainty is handled elastically rather than collapsed into neutral.
+
+Representative Error Examples:
+
+To concretize the error profile described above, we highlight several representative misclassified samples drawn from the pb75‑agree + reweight + smoothing setting. These examples illustrate that most errors arise from semantically ambiguous or forward‑looking statements rather than polarity reversal.
+
+1) Forward‑looking operational statements (positive → neutral):
+   - “Deliveries have started and the network will be ready for a launch soon.”
+   - “However, he expects banks to provide alternative financing.”
+
+   These sentences describe anticipated or preparatory actions without realized financial outcomes. While often annotated as positive, they lack explicit payoff signals, placing them near the neutral–positive boundary.
+
+2) Factual business arrangements without affective framing (positive → neutral):
+   - “The company will also be compensated for acting as a reserve batch plant.”
+   - “The energy‑efficient data center will be built by combining an effective energy solution with state‑of‑the‑art technology.”
+
+   Such statements encode objective business facts. Model preference for neutral reflects a learned distinction between factual description and sentiment expression.
+
+3) Reported speech or promotional language (neutral → positive):
+   - “It is a testament to the quality of our LTE solution and our commitment to the Japanese market,” he added.
+
+   Quoted evaluations introduce subjective praise but remain detached from concrete outcomes, leading to bidirectional confusion between neutral and positive.
+
+4) Cost or process‑related disclosures (neutral → negative):
+   - “The bank also expects additional costs, related to the Dash 8‑Q400 jets, which the group shelved in October 2007.”
+
+   These cases involve negative facts presented in a report‑like tone, producing weak negative signals that remain close to the neutral boundary.
+
+Across these examples, misclassifications are associated with moderate prediction margins rather than extreme confidence, reinforcing the interpretation that errors reflect intrinsic label ambiguity in PhraseBank rather than model miscalibration or polarity collapse.
 
 With label smoothing enabled (ε = 0.1), the high‑agreement evaluation (all‑agree) remains perfectly separable: all three classes are predicted without error, indicating that smoothing does not compromise peak discriminative capacity on clean labels.
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,15 @@ def _normalize_split(name: str) -> str:
     return _EVAL_SPLIT_ALIASES.get(key, key)
 
 
+def _filter_model_inputs(model: torch.nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
+    params = inspect.signature(model.forward).parameters
+    for param in params.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return batch
+    allowed = {name for name in params if name != "self"}
+    return {key: value for key, value in batch.items() if key in allowed}
+
+
 def _resolve_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     if checkpoint in {"best", "last"}:
         candidate = run_dir / checkpoint
@@ -61,15 +72,17 @@ def _resolve_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
 
 
-def _resolve_out_dir(template: str, run_dir: Path, run_id: str) -> Path:
+def _resolve_out_dir(template: str, run_id: str, root: Path) -> Path:
     expanded = template.replace("<run_id>", run_id)
     out_path = Path(expanded)
     if out_path.is_absolute():
         return out_path
-    if expanded.startswith("runs/") and run_dir.name == run_id and run_dir.parent.name == "runs":
-        return run_dir.parent / Path(expanded).relative_to("runs")
-    repo_root = _repo_root_from_here()
-    return repo_root / out_path
+    prefix = Path("runs") / run_id
+    if out_path == prefix:
+        return root
+    if prefix in out_path.parents:
+        return root / out_path.relative_to(prefix)
+    return root / out_path
 
 
 def _build_dataset(
@@ -78,6 +91,7 @@ def _build_dataset(
     split: str,
     keep_text: bool,
     add_example_id: bool,
+    add_sample_id: bool,
     add_dataset_row: bool,
 ):
     if cfg.data.name != "phrasebank":
@@ -98,6 +112,7 @@ def _build_dataset(
         tokenizer,
         keep_text=keep_text,
         add_example_id=add_example_id,
+        add_sample_id=add_sample_id,
         add_dataset_row=add_dataset_row,
     )
     return ds, tokenizer
@@ -157,6 +172,7 @@ def _eval_one(
         split=split,
         keep_text=collect_mistakes,
         add_example_id=collect_mistakes,
+        add_sample_id=collect_mistakes,
         add_dataset_row=collect_mistakes,
     )
     split_key = _normalize_split(split)
@@ -185,6 +201,7 @@ def _eval_one(
     preds: list[int] = []
     labels_list: list[int] = []
     mistakes: list[dict[str, Any]] = []
+    sample_id_text: dict[str, str] = {}
     seen = 0
     loss_sum = 0.0
     ece_state = init_ece_bins(n_bins) if "ece" in metrics else None
@@ -192,7 +209,8 @@ def _eval_one(
     with torch.no_grad():
         for batch in loader:
             batch = {k: v.to(device_spec.device) for k, v in batch.items()}
-            out = model(**batch)
+            model_inputs = _filter_model_inputs(model, batch)
+            out = model(**model_inputs)
             logits = out.logits
             labels_tensor = batch["labels"] if "labels" in batch else batch["label"]
             dataset_rows = batch.get("dataset_row")
@@ -237,7 +255,22 @@ def _eval_one(
                     row_idx = int(dataset_rows[i].detach().cpu().item())
                     raw_row = raw_ds[row_idx]
                     text = raw_row.get("text", "")
-                    example_id = raw_row.get("example_id")
+                    sample_id = raw_row.get("sample_id")
+                    if sample_id is None:
+                        raise ValueError(
+                            "sample_id missing from dataset; ensure add_sample_id=True during preprocessing"
+                        )
+                    if not isinstance(sample_id, str) or len(sample_id) != 40:
+                        raise ValueError(f"invalid sample_id for dataset_row={row_idx}: {sample_id!r}")
+                    prev_text = sample_id_text.get(sample_id)
+                    if prev_text is not None and prev_text != text:
+                        warnings.warn(
+                            f"sample_id collision with different text for dataset_row={row_idx}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                    else:
+                        sample_id_text[sample_id] = text
                     token_len = None
                     if "input_ids" in raw_row:
                         token_len = len(raw_row["input_ids"])
@@ -246,9 +279,7 @@ def _eval_one(
                         truncated = bool(cfg.data.truncation and token_len >= cfg.data.max_length)
                     mistakes.append(
                         {
-                            "run_id": run_id,
                             "split": eval_name,
-                            "example_id": example_id,
                             "y_true": id2label.get(true_id, str(true_id)),
                             "y_pred": id2label.get(pred_id, str(pred_id)),
                             "probs": probs[i].tolist(),
@@ -259,6 +290,8 @@ def _eval_one(
                             "truncated": truncated,
                             "dataset_row": row_idx,
                             "agreement_source": cfg.data.agree,
+                            "run_id": run_id,
+                            "sample_id": sample_id,
                         }
                     )
 
@@ -317,10 +350,9 @@ def run_eval_suite(cfg: EvalSuiteConfig) -> tuple[list[dict[str, Any]], Path]:
     if not run_dir.exists():
         raise FileNotFoundError(f"run_dir not found: {run_dir}")
     run_id = run_dir.name
-    out_dir = _resolve_out_dir(cfg.eval.logging.out_dir, run_dir, run_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     checkpoint_path = _resolve_checkpoint(run_dir, cfg.runs.checkpoint)
+    out_dir = _resolve_out_dir(cfg.eval.logging.out_dir, run_id, checkpoint_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
     metrics = cfg.eval.metrics or [
         "loss",
         "macro_f1",
@@ -354,7 +386,7 @@ def run_eval_suite(cfg: EvalSuiteConfig) -> tuple[list[dict[str, Any]], Path]:
     _safe_write_jsonl(jsonl_path, records)
 
     if cfg.eval.mistake_path is not None:
-        mistake_path = run_dir / cfg.eval.mistake_path
+        mistake_path = out_dir / cfg.eval.mistake_path
         write_mistakes_jsonl(
             all_mistakes,
             mistake_path,

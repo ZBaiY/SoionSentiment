@@ -57,6 +57,17 @@ def _ensure_example_id(ds: DatasetDict) -> DatasetDict:
     return ds
 
 
+def _ensure_sample_id(ds: DatasetDict) -> DatasetDict:
+    for split in ["train", "val", "test"]:
+        cols = set(ds[split].column_names)
+        if "sample_id" in cols:
+            continue
+        ds[split] = ds[split].map(
+            lambda row: {"sample_id": hashlib.sha1(row["text"].encode("utf-8")).hexdigest()}
+        )
+    return ds
+
+
 def _ensure_dataset_row(ds: DatasetDict) -> DatasetDict:
     for split in ["train", "val", "test"]:
         ds[split] = ds[split].map(lambda _row, idx: {"dataset_row": idx}, with_indices=True)
@@ -70,6 +81,7 @@ def tokenize_dataset(
     *,
     keep_text: bool = False,
     add_example_id: bool = False,
+    add_sample_id: bool = False,
     add_dataset_row: bool = False,
 ) -> DatasetDict:
     text_field = cfg.data.text_field
@@ -81,6 +93,8 @@ def tokenize_dataset(
 
     if add_example_id:
         ds = _ensure_example_id(ds)
+    if add_sample_id:
+        ds = _ensure_sample_id(ds)
     if add_dataset_row:
         ds = _ensure_dataset_row(ds)
 

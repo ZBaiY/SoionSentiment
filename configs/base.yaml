@@ -101,8 +101,8 @@ eval:
   mode: max
   compute_confusion_matrix: true
   mistake_path: sample_mistake.jsonl  # null to disable; relative to run_dir
-  mistake_max_n: null                 # null = all mistakes
-  mistake_seed: 1234                  # deterministic sampling seed
+  mistake_max_n: 10                 # null = all, mistakes output limit
+  mistake_seed: 1234                  # deterministic sampling seed, decide which mistakes to save when max_n is set
 
 logging:
   run_dir: runs
