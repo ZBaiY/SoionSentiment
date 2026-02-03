@@ -120,6 +120,9 @@ class EvalConfig:
     metric: str
     mode: str
     compute_confusion_matrix: bool
+    mistake_path: str | None = "sample_mistake.jsonl"
+    mistake_max_n: int | None = None
+    mistake_seed: int = 1234
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,10 @@ class Config:
                 raise ValueError("training.early_stopping.mode must be one of: min, max")
         if self.eval.mode not in {"min", "max"}:
             raise ValueError("eval.mode must be one of: min, max")
+        if self.eval.mistake_max_n is not None and self.eval.mistake_max_n <= 0:
+            raise ValueError("eval.mistake_max_n must be > 0 when set")
+        if self.eval.mistake_seed < 0:
+            raise ValueError("eval.mistake_seed must be >= 0")
         if self.runtime.device not in {"auto", "cpu", "cuda", "mps"}:
             raise ValueError("runtime.device must be one of: auto, cpu, cuda, mps")
         if self.train.precision not in {"fp32", "fp16", "bf16"}:

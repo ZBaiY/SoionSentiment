@@ -80,3 +80,8 @@ python scripts/train.py \
   --override training.epochs=3 \
   --override optim.lr=3e-5
 ```
+
+## Eval Mistake Logs
+
+Evaluation can optionally write a `sample_mistake.jsonl` under the run directory with misclassified examples.
+Configure via `eval.mistake_path` (null disables), `eval.mistake_max_n` (null = all), and `eval.mistake_seed`.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import hashlib
+
 from datasets import DatasetDict
 from transformers import AutoTokenizer
 
@@ -36,13 +38,51 @@ def _check_label_range(ds: DatasetDict, cfg: Config) -> None:
             raise ValueError(f"labels out of range for split={split}, num_labels={num_labels}")
 
 
-def tokenize_dataset(cfg: Config, ds: DatasetDict, tokenizer) -> DatasetDict:
+def _ensure_example_id(ds: DatasetDict) -> DatasetDict:
+    for split in ["train", "val", "test"]:
+        cols = set(ds[split].column_names)
+        if "example_id" in cols:
+            continue
+        id_source = None
+        for key in ("id", "idx", "index"):
+            if key in cols:
+                id_source = key
+                break
+        if id_source is not None:
+            ds[split] = ds[split].map(lambda row: {"example_id": str(row[id_source])})
+            continue
+        ds[split] = ds[split].map(
+            lambda row: {"example_id": hashlib.sha1(row["text"].encode("utf-8")).hexdigest()}
+        )
+    return ds
+
+
+def _ensure_dataset_row(ds: DatasetDict) -> DatasetDict:
+    for split in ["train", "val", "test"]:
+        ds[split] = ds[split].map(lambda _row, idx: {"dataset_row": idx}, with_indices=True)
+    return ds
+
+
+def tokenize_dataset(
+    cfg: Config,
+    ds: DatasetDict,
+    tokenizer,
+    *,
+    keep_text: bool = False,
+    add_example_id: bool = False,
+    add_dataset_row: bool = False,
+) -> DatasetDict:
     text_field = cfg.data.text_field
     label_field = cfg.data.label_field
     if label_field != "label":
         ds = ds.rename_column(label_field, "label")
     if text_field != "text":
         ds = ds.rename_column(text_field, "text")
+
+    if add_example_id:
+        ds = _ensure_example_id(ds)
+    if add_dataset_row:
+        ds = _ensure_dataset_row(ds)
 
     ds = _apply_max_samples(ds, cfg)
     _check_label_range(ds, cfg)
@@ -56,12 +96,15 @@ def tokenize_dataset(cfg: Config, ds: DatasetDict, tokenizer) -> DatasetDict:
         )
 
     ds = ds.map(_tokenize, batched=True)
-    ds = ds.remove_columns(["text"])
+    if not keep_text:
+        ds = ds.remove_columns(["text"])
 
     for split in ["train", "val", "test"]:
         cols = ["input_ids", "attention_mask", "label"]
         if "token_type_ids" in ds[split].column_names:
             cols.append("token_type_ids")
+        if add_dataset_row and "dataset_row" in ds[split].column_names:
+            cols.append("dataset_row")
         ds[split] = ds[split].with_format("torch", columns=cols)
 
     return ds

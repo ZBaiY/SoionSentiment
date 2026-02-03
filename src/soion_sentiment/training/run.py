@@ -21,6 +21,7 @@ from soion_sentiment.data.manifest import build_data_manifest, write_data_manife
 from soion_sentiment.training.metrics import compute_metrics
 from soion_sentiment.model.model import build_model
 from soion_sentiment.training.seed import set_seed
+from soion_sentiment.analysis.mistakes_io import write_mistakes_jsonl
 
 
 def _env_info() -> str:
@@ -42,7 +43,14 @@ def _run_dir(cfg: Config) -> Path:
     return Path(cfg.logging.run_dir) / f"{timestamp}_{cfg_hash}{suffix}"
 
 
-def _build_dataset(cfg: Config, tokenizer):
+def _build_dataset(
+    cfg: Config,
+    tokenizer,
+    *,
+    keep_text: bool = False,
+    add_example_id: bool = False,
+    add_dataset_row: bool = False,
+):
     if cfg.data.name != "phrasebank":
         raise ValueError(f"unsupported dataset: {cfg.data.name}")
     if cfg.data.split_protocol != "precomputed":
@@ -54,7 +62,14 @@ def _build_dataset(cfg: Config, tokenizer):
         hf_dataset_root=cfg.data.hf_dataset_root,
         processed_root=cfg.data.processed_root,
     )
-    return tokenize_dataset(cfg, ds, tokenizer)
+    return tokenize_dataset(
+        cfg,
+        ds,
+        tokenizer,
+        keep_text=keep_text,
+        add_example_id=add_example_id,
+        add_dataset_row=add_dataset_row,
+    )
 
 
 def run_train(
@@ -127,8 +142,16 @@ def run_eval(
     )
     device_spec = get_device(cfg.runtime, cfg.train.precision)
     tokenizer = build_tokenizer(cfg)
-    ds = _build_dataset(cfg, tokenizer)
+    collect_mistakes = cfg.eval.mistake_path is not None
+    ds = _build_dataset(
+        cfg,
+        tokenizer,
+        keep_text=collect_mistakes,
+        add_example_id=collect_mistakes,
+        add_dataset_row=collect_mistakes,
+    )
     loader = build_dataloader(cfg, ds[split], tokenizer, split)
+    raw_ds = ds[split].with_format(None) if collect_mistakes else None
 
     labels = cfg.model.labels
     label2id = {label: i for i, label in enumerate(labels)}
@@ -145,8 +168,14 @@ def run_eval(
     model.to(device_spec.device)
     model.eval()
 
+    run_dir = checkpoint_path.parent
+    if not (run_dir / "resolved_config.yaml").exists():
+        run_dir = checkpoint_path
+    run_id = run_dir.name
+
     preds: list[int] = []
     labels: list[int] = []
+    mistakes: list[dict[str, Any]] = []
     with torch.no_grad():            # deactivate gradient calculation for evaluation, save memory (no backprop tracking tables for autograd)
         for batch in loader:
             batch = {k: v.to(device_spec.device) for k, v in batch.items()}
@@ -155,7 +184,57 @@ def run_eval(
             preds.extend(torch.argmax(logits, dim=-1).detach().cpu().tolist())
             label_tensor = batch["labels"] if "labels" in batch else batch["label"]
             labels.extend(label_tensor.detach().cpu().tolist())
+            if collect_mistakes and raw_ds is not None and "dataset_row" in batch:
+                probs = torch.softmax(logits, dim=-1).detach().cpu()
+                top2 = torch.topk(probs, k=min(2, probs.shape[-1]), dim=-1).values
+                margins = (top2[:, 0] - top2[:, 1]).tolist() if top2.shape[-1] > 1 else [0.0] * probs.shape[0]
+                batch_preds = torch.argmax(logits, dim=-1).detach().cpu().tolist()
+                batch_labels = label_tensor.detach().cpu().tolist()
+                dataset_rows = batch["dataset_row"].detach().cpu().tolist()
+                for i, (pred_id, true_id) in enumerate(zip(batch_preds, batch_labels)):
+                    if pred_id == true_id:
+                        continue
+                    row_idx = int(dataset_rows[i])
+                    raw_row = raw_ds[row_idx]
+                    text = raw_row.get("text", "")
+                    example_id = raw_row.get("example_id")
+                    token_len = None
+                    if "input_ids" in raw_row:
+                        token_len = len(raw_row["input_ids"])
+                    truncated = None
+                    if token_len is not None:
+                        truncated = bool(cfg.data.truncation and token_len >= cfg.data.max_length)
+                    mistakes.append(
+                        {
+                            "run_id": run_id,
+                            "split": split,
+                            "example_id": example_id,
+                            "y_true": id2label.get(true_id, str(true_id)),
+                            "y_pred": id2label.get(pred_id, str(pred_id)),
+                            "probs": probs[i].tolist(),
+                            "label_order": list(cfg.model.labels),
+                            "margin": float(margins[i]),
+                            "text": text,
+                            "token_len": token_len,
+                            "truncated": truncated,
+                            "dataset_row": row_idx,
+                            "agreement_source": cfg.data.agree,
+                        }
+                    )
 
     metrics = compute_metrics(preds, labels, cfg)
     metrics["split"] = split
+    if collect_mistakes:
+        mistake_path = Path(cfg.eval.mistake_path) if cfg.eval.mistake_path else None
+        if mistake_path is not None:
+            if not mistake_path.is_absolute():
+                mistake_path = run_dir / mistake_path
+            write_mistakes_jsonl(
+                mistakes,
+                mistake_path,
+                max_n=cfg.eval.mistake_max_n,
+                seed=cfg.eval.mistake_seed,
+                run_id=run_id,
+                split=split,
+            )
     return metrics

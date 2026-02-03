@@ -1,12 +1,11 @@
 ---
 paths:
   runs_root: "runs"
-  run_id: "20260130_215506_ee534729"
+  run_id: "20260202_pball_none_smoothing00"
 
 core:
   train_log: "train.jsonl"
   metrics_log: "metrics.jsonl"
-
 strict:
   max_bad_lines: 0          # default: 0 (any bad line => raise)
   require_step_axis: true   # if we cannot infer x-axis => raise

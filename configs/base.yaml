@@ -4,7 +4,7 @@ seed: 5768
 # Registry pointers:
 # - If a ref is set, the corresponding registry file overlays this base config.
 # - If a ref is null/empty, the base.* section stays as the default.
-data_ref: phrasebank_66agree
+data_ref: phrasebank_allagree
 model_ref: deberta_v3_base
 preset_ref: baseline
 
@@ -50,8 +50,8 @@ training:
   eval_stop_max_samples: null  # Max number of validation samples to use for "early stopping eval". Default null = full validation set. Larger is more stable.
   # This matches the common "epoch-level early stopping" semantics.
   eval_stop_every_epochs: 1    # If eval_stop_every_steps is null, run stop-eval once at the end of each epoch.
-  label_smoothing: 0.0
-  imbalance_strategy: none
+  label_smoothing: 0.0   # label smoothing factor, represents the confidence in the given labels, range: [0.0, 1.0], recommended: 0.0 ~ 0.2
+  imbalance_strategy: reweight  # none | reweight ( todo: | oversample | undersample)
   early_stopping:           # early stopping config, this is used to stop training when eval metric does not improve for certain number of evals
     enabled: true     
     metric: macro_f1  
@@ -100,6 +100,9 @@ eval:
   metric: macro_f1
   mode: max
   compute_confusion_matrix: true
+  mistake_path: sample_mistake.jsonl  # null to disable; relative to run_dir
+  mistake_max_n: null                 # null = all mistakes
+  mistake_seed: 1234                  # deterministic sampling seed
 
 logging:
   run_dir: runs

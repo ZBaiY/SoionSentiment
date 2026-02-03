@@ -1,0 +1,82 @@
+
+
+Ablation Summary (v1)
+
+This document summarizes a set of controlled ablation experiments designed to isolate which factors materially affect the learned decision geometry in sentiment classification on Financial PhraseBank.
+
+The goal of these ablations is not metric maximization, but causal attribution: identifying which components of the training setup are responsible for the emergence or absence of a neutral-dominant failure mode.
+
+All experiments use the same backbone architecture (DeBERTa‑v3‑base), optimizer (AdamW), learning‑rate schedule, and training protocol. Each ablation varies exactly one factor at a time.
+
+
+1. Training Data Agreement (Primary Ablation)
+
+Setup:
+- Model A (anchor): trained on sentences_75agree, with reweighting, no smoothing
+- Model B (contrast): trained on sentences_allagree
+- add label smoothing, 0.1
+- No class reweighting
+- Identical hyperparameters and stopping criteria
+
+Evaluation:
+- Post‑hoc evaluation on 75 / 66 / 50 / all‑agree validation splits
+
+On Switching Data Agreement:
+
+Across all evaluation splits, both models exhibit strong diagonal dominance and a stable polarity structure: direct negative ↔ positive confusions are essentially absent. Errors concentrate on transitions involving the neutral class.
+
+Model B (trained on all‑agree) shows a sharp agreement‑dependent collapse pattern. On all‑agree and 75‑agree evaluation, off‑diagonal mass is minimal. As evaluation agreement relaxes (66 → 50), misclassified samples increasingly fall into the neutral column, indicating that uncertain boundary cases are systematically absorbed by the neutral class. The dominant failure mode is positive → neutral, followed by negative → neutral.
+
+Model A (trained on 75‑agree) displays a softer decision geometry. Even on all‑agree evaluation, small but structured neutral ↔ positive and negative ↔ neutral confusions are present, indicating less reliance on a hard neutral basin. As agreement decreases, the growth of neutral absorption is smoother and slower than in Model B, and a larger fraction of positive samples remains correctly classified under low‑agreement evaluation.
+
+Interpretation at the geometry level: training agreement primarily controls the curvature of the decision boundary under label noise. Higher‑agreement training yields sharper boundaries with higher peak consistency but stronger collapse toward neutral under distributional noise. Lower‑agreement training sacrifices boundary sharpness on clean data in exchange for a flatter, more stable error surface as annotation agreement degrades.
+
+
+On adding 0.1 label smoothing:
+
+With label smoothing enabled (ε = 0.1), the high‑agreement evaluation (all‑agree) remains perfectly separable: all three classes are predicted without error, indicating that smoothing does not compromise peak discriminative capacity on clean labels.
+
+On the in‑distribution 75‑agree evaluation, total error increases slightly, but the error mass is more evenly distributed across off‑diagonal entries. Neutral ↔ positive and negative ↔ neutral confusions are both present at low, comparable magnitudes, with no dominant failure channel.
+
+As evaluation agreement decreases (66 → 50), smoothing produces a systematic change in error flow. Compared to the non‑smoothed 75‑agree baseline, positive → neutral misclassification grows more slowly, while neutral → positive misclassification increases markedly. At 50‑agree, neutral → positive errors exceed positive → neutral errors, indicating that neutral acts as a bidirectional buffer rather than a terminal sink.
+
+Critically, across all evaluation splits, direct negative ↔ positive confusions remain essentially zero. Label smoothing therefore reshapes uncertainty handling without inducing polarity collapse.
+
+Geometrically, label smoothing reduces the stickiness of the neutral basin: uncertain samples are less likely to be permanently absorbed into neutral and more likely to traverse the neutral boundary symmetrically. This results in a flatter, more elastic decision surface under label disagreement, while preserving sharp class separation under high‑agreement conditions.
+
+
+On Switching off reweighting:
+
+With class reweighting removed, the model retains strong diagonal dominance and preserves the global polarity structure across all evaluation splits. Direct negative ↔ positive confusions remain rare and never become a dominant failure mode.
+
+On the high‑agreement evaluation (all‑agree), performance remains near‑perfect, but a new qualitative signal appears: a small number of neutral and positive samples are misclassified as negative. This direction of error is largely absent in the reweighted baseline and reflects a shift in effective class priors rather than an increase in label noise sensitivity.
+
+On the in‑distribution 75‑agree evaluation, neutral ↔ positive confusions increase relative to the baseline. Both positive → neutral and neutral → positive channels grow, but the increase is asymmetric, with absorption into neutral exceeding neutral‑to‑positive recovery.
+
+As evaluation agreement decreases (66 → 50), this asymmetry becomes more pronounced. Compared to the reweighted baseline, positive → neutral errors grow faster than neutral → positive errors, indicating that the neutral class increasingly functions as a weak sink rather than a symmetric buffer. At 50‑agree, neutral absorption clearly dominates over neutral recovery.
+
+Across all splits, removal of reweighting also introduces a small but consistent leakage of samples toward the negative class (neutral → negative, positive → negative), a pattern not observed in the reweighted baseline.
+
+
+2. Consolidated Conclusions
+
+Across all ablations, we find that the dominant failure modes of the model are not governed by polarity confusion between negative and positive classes, but by the geometric role assumed by the neutral class under different training protocols.
+
+First, training data agreement primarily controls the curvature of the decision boundary under label disagreement. High-agreement training yields sharper boundaries and higher peak consistency on clean labels, but induces rapid collapse toward neutral when evaluated on lower-agreement data. Moderate-agreement training produces flatter boundaries and a continuous degradation pattern, avoiding abrupt neutral collapse.
+
+Second, label smoothing reshapes uncertainty flow without degrading separability on clean data. Its primary effect is to reduce the stickiness of the neutral basin: positive-to-neutral absorption grows more slowly, while neutral-to-positive recovery increases as agreement decreases. As a result, neutral transitions from an absorbing state to a symmetric buffer under label noise.
+
+Third, class reweighting modulates the effective energy depth of the neutral basin. Removing reweighting does not destroy polarity structure, but it deepens the neutral basin, increases asymmetric absorption of uncertain samples, and introduces mild leakage toward the negative class due to shifted class priors.
+
+Taken together, these results indicate that the neutral class is not a passive category but a structurally induced attractor whose behavior is explicitly shaped by training agreement, label smoothing, and class reweighting. Different combinations of these factors correspond to distinct failure regimes—neutral collapse, weak sink, or symmetric buffer—which are directly observable in confusion-matrix geometry and cannot be inferred from scalar metrics alone.
+
+
+3. Implications for Scaling and Ablation Closure
+
+Based on the ablation results above, we conclude that further single‑factor ablations are unlikely to yield additional causal insight. The three primary axes—training agreement, label smoothing, and class reweighting—already form a closed explanatory system that accounts for all observed changes in confusion‑matrix geometry. Additional sweeps (e.g., larger smoothing coefficients or alternative weighting schedules) would primarily amplify known effects rather than reveal new failure regimes.
+
+Accordingly, we conclude the ablation phase at this point.
+
+For future large‑scale training and data expansion, we select the model trained on sentences_75agree with both label smoothing (ε = 0.1) and class reweighting as the scaling baseline. This configuration preserves sharp separability on high‑agreement data while maintaining symmetric uncertainty buffering as annotation agreement decreases. Empirically, it avoids both rapid neutral collapse (observed under all‑agree training) and asymmetric neutral absorption (observed when reweighting is removed).
+
+Conceptually, this choice corresponds to a decision geometry with moderate boundary curvature, reduced neutral basin stickiness, and an elevated neutral energy floor. Such a configuration is expected to remain stable as additional, noisier data are introduced, making it a suitable anchor for continued training, domain expansion, or downstream transfer.
