@@ -1,0 +1,12 @@
+Ablation Summary (v2)
+
+Disentangling Calibration Failure from Label-Ontology Mismatch
+
+0. Problem Statement
+Error analysis of the baseline encoder-only classifier reveals a dominant failure pattern concentrated around the neutral class, characterized by high-confidence neutral↔positive misclassifications and saturated prediction margins. Two competing explanations are plausible:
+	1.	Calibration failure: the learned decision geometry is broadly correct, but softmax probabilities are systematically over-confident, causing errors to appear severe despite correct ranking.
+	2.	Label-ontology mismatch: the discrete sentiment labels (negative / neutral / positive) do not align with the intrinsic semantic structure of the embedding space, particularly with respect to the role of “neutral”.
+
+The goal of this ablation suite is to causally separate these two hypotheses using controlled, orthogonal experimental axes, without introducing new model architectures or confounding training dynamics.
+
+⸻

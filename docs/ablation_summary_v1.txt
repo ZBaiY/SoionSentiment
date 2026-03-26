@@ -10,11 +10,17 @@ All experiments use the same backbone architecture (DeBERTa‑v3‑base), optimi
 1. Training Data Agreement (Primary Ablation)
 
 Setup:
-- Model A (anchor): trained on sentences_75agree, with reweighting, no smoothing
-- Model B (contrast): trained on sentences_allagree
-- add label smoothing, 0.1
-- No class reweighting
-- Identical hyperparameters and stopping criteria
+- Backbone: DeBERTa‑v3‑base
+- Optimizer: AdamW
+- LR schedule + training protocol: identical across runs
+- Class reweighting: OFF
+- Label smoothing: OFF
+
+Models:
+- Model A (anchor): train split = sentences_75agree
+- Model B (contrast): train split = sentences_allagree
+
+All other hyperparameters and stopping criteria are held fixed.
 
 Evaluation:
 - Post‑hoc evaluation on 75 / 66 / 50 / all‑agree validation splits
@@ -29,6 +35,18 @@ Model A (trained on 75‑agree) displays a softer decision geometry. Even on all
 
 Interpretation at the geometry level: training agreement primarily controls the curvature of the decision boundary under label noise. Higher‑agreement training yields sharper boundaries with higher peak consistency but stronger collapse toward neutral under distributional noise. Lower‑agreement training sacrifices boundary sharpness on clean data in exchange for a flatter, more stable error surface as annotation agreement degrades.
 
+
+2. Label Smoothing (Secondary Ablation)
+
+Setup:
+- Backbone: DeBERTa‑v3‑base
+- Training split: sentences_75agree
+- Optimizer / LR schedule / stopping: identical
+- Class reweighting: ON
+
+Models:
+- Model C (anchor): label smoothing = OFF
+- Model D (contrast): label smoothing = ε = 0.1
 
 On adding 0.1 label smoothing:
 
@@ -79,6 +97,18 @@ Critically, across all evaluation splits, direct negative ↔ positive confusion
 Geometrically, label smoothing reduces the stickiness of the neutral basin: uncertain samples are less likely to be permanently absorbed into neutral and more likely to traverse the neutral boundary symmetrically. This results in a flatter, more elastic decision surface under label disagreement, while preserving sharp class separation under high‑agreement conditions.
 
 
+3. Class Reweighting (Tertiary Ablation)
+
+Setup:
+- Backbone: DeBERTa‑v3‑base
+- Training split: sentences_75agree
+- Optimizer / LR schedule / stopping: identical
+- Label smoothing: OFF
+
+Models:
+- Model E (anchor): class reweighting = ON
+- Model F (contrast): class reweighting = OFF
+
 On Switching off reweighting:
 
 With class reweighting removed, the model retains strong diagonal dominance and preserves the global polarity structure across all evaluation splits. Direct negative ↔ positive confusions remain rare and never become a dominant failure mode.
@@ -94,9 +124,7 @@ Across all splits, removal of reweighting also introduces a small but consistent
 
 2. Consolidated Conclusions
 
-Across all ablations, we find that the dominant failure modes of the model are not governed by polarity confusion between negative and positive classes, but by the geometric role assumed by the neutral class under different training protocols.
-
-First, training data agreement primarily controls the curvature of the decision boundary under label disagreement. High-agreement training yields sharper boundaries and higher peak consistency on clean labels, but induces rapid collapse toward neutral when evaluated on lower-agreement data. Moderate-agreement training produces flatter boundaries and a continuous degradation pattern, avoiding abrupt neutral collapse.
+Across all ablations, we find that the dominant failure modes of the model are governed by three largely orthogonal training axes: training‑data agreement, label smoothing, and class reweighting. Each axis induces a distinct and interpretable modification of the learned decision geometry, primarily through its effect on the role of the neutral class. Importantly, these effects are not reducible to scalar metric changes and manifest instead as qualitative shifts in confusion‑matrix structure and error‑margin distributions.
 
 Second, label smoothing reshapes uncertainty flow without degrading separability on clean data. Its primary effect is to reduce the stickiness of the neutral basin: positive-to-neutral absorption grows more slowly, while neutral-to-positive recovery increases as agreement decreases. As a result, neutral transitions from an absorbing state to a symmetric buffer under label noise.
 
@@ -111,6 +139,6 @@ Based on the ablation results above, we conclude that further single‑factor ab
 
 Accordingly, we conclude the ablation phase at this point.
 
-For future large‑scale training and data expansion, we select the model trained on sentences_75agree with both label smoothing (ε = 0.1) and class reweighting as the scaling baseline. This configuration preserves sharp separability on high‑agreement data while maintaining symmetric uncertainty buffering as annotation agreement decreases. Empirically, it avoids both rapid neutral collapse (observed under all‑agree training) and asymmetric neutral absorption (observed when reweighting is removed).
+For future large‑scale training and data expansion, we select sentences_75agree as the data anchor, combined with class reweighting and moderate label smoothing (ε = 0.1), as the scaling baseline. This choice reflects the independent conclusions drawn from the three ablation axes rather than the outcome of a single bundled configuration.
 
 Conceptually, this choice corresponds to a decision geometry with moderate boundary curvature, reduced neutral basin stickiness, and an elevated neutral energy floor. Such a configuration is expected to remain stable as additional, noisier data are introduced, making it a suitable anchor for continued training, domain expansion, or downstream transfer.
